@@ -1,0 +1,9 @@
+{
+  "name": "sketch-to-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Draw a UI sketch and get it rebuilt with iOS 27, Material 3 and Simple Design System components.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
