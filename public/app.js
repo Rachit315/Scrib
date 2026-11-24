@@ -1,4 +1,4 @@
-/* Sketch → UI
+/* Scrib (Sketch → UI)
  * Draw on an infinite, Figma-style canvas. When you pause, the shape you drew is
  * recognised and a popover offers that component from every UI kit (or device
  * frames for a frame-shaped outline). Pick one and it replaces the sketch on the
@@ -238,8 +238,13 @@
   const enabled = new Set(KITS.map(k => k.id));
   const history = [], future = [];
 
-  const snapshot = () => JSON.stringify({ strokes, objects, nextId });
-  function restore(s) { const d = JSON.parse(s); strokes = d.strokes; objects = d.objects; nextId = d.nextId; }
+  // Live mode plugs in here (set up near the end of the file).
+  const liveHooks = { seq: () => 0, touch: null, cursor: null, view: null, restored: null, strokeDone: null, busy: null };
+  const snapshot = () => JSON.stringify({ strokes, objects, nextId, lseq: liveHooks.seq() });
+  function restore(s) {
+    const d = JSON.parse(s); strokes = d.strokes; objects = d.objects; nextId = Math.max(nextId, d.nextId);
+    if (liveHooks.restored) liveHooks.restored(d);
+  }
   function commit(prev) { history.push(prev); if (history.length > 200) history.shift(); future.length = 0; }
   function undo() { if (!history.length) return; future.push(snapshot()); restore(history.pop()); clearSel(); closePop(); update(); }
   function redo() { if (!future.length) return; history.push(snapshot()); restore(future.pop()); clearSel(); closePop(); update(); }
@@ -589,6 +594,7 @@
     $('#zoomLabel').textContent = Math.round(view.z * 100) + '%';
     renderOverlay(); renderBadges(); positionSelbar(); positionPop(); if (thinking) renderThinking();
     if (typeof updatePenCursor === 'function') updatePenCursor();
+    if (liveHooks.view) liveHooks.view();
     if (typeof save === 'function') save();
   }
   function zoomAt(f, cx, cy) {
@@ -686,11 +692,12 @@
     if (sb) {
       const p = rs.length === 1 && selO.size === 1 ? 0 : px(6), x = sb.x - p, y = sb.y - p, w = sb.w + 2 * p, h = sb.h + 2 * p, hs = px(8);
       out += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#2c63e8" stroke-width="${px(1.5)}"/>`;
-      for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) out += `<rect x="${hx - hs / 2}" y="${hy - hs / 2}" width="${hs}" height="${hs}" fill="#fff" stroke="#2c63e8" stroke-width="${px(1.5)}"/>`;
-      if (selO.size === 1 && !selS.size) { const o = objById([...selO][0]); const t = `${Math.round(o.w)} × ${Math.round(o.h)}`; out += `<rect x="${x + w / 2 - px(t.length * 3.4 + 8)}" y="${y + h + px(8)}" width="${px(t.length * 6.8 + 16)}" height="${px(18)}" rx="${px(4)}" fill="#2c63e8"/><text x="${x + w / 2}" y="${y + h + px(21)}" text-anchor="middle" font-size="${px(11)}" font-family="IBM Plex Sans, system-ui, sans-serif" font-weight="600" fill="#fff">${t}</text>`; }
+ if (tool !== 'proto') for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) out += `<rect x="${hx - hs / 2}" y="${hy - hs / 2}" width="${hs}" height="${hs}" fill="#fff" stroke="#2c63e8" stroke-width="${px(1.5)}"/>`;
+      if (selO.size === 1 && !selS.size && tool !== 'proto') { const o = objById([...selO][0]); const t = `${Math.round(o.w)} × ${Math.round(o.h)}`; out += `<rect x="${x + w / 2 - px(t.length * 3.4 + 8)}" y="${y + h + px(8)}" width="${px(t.length * 6.8 + 16)}" height="${px(18)}" rx="${px(4)}" fill="#2c63e8"/><text x="${x + w / 2}" y="${y + h + px(21)}" text-anchor="middle" font-size="${px(11)}" font-family="IBM Plex Sans, system-ui, sans-serif" font-weight="600" fill="#fff">${t}</text>`; }
     }
     for (const g of guides) out += `<line x1="${g.x1}" y1="${g.y1}" x2="${g.x2}" y2="${g.y2}" stroke="#f24822" stroke-width="${px(1)}"/>`;
     if (marquee) out += `<rect x="${marquee.x}" y="${marquee.y}" width="${marquee.w}" height="${marquee.h}" fill="rgba(44,99,232,.08)" stroke="#2c63e8" stroke-width="${px(1)}"/>`;
+    out += protoOverlay(px); // arrows and state tags
     overlay.innerHTML = out;
   }
 
@@ -698,7 +705,8 @@
   const badges = $('#badges');
   function renderBadges() {
     if ((drag && drag.mode === 'pen') || !badgesReady) { badges.innerHTML = ''; return; }
-    badges.innerHTML = groups.filter(g => (!pop || pop.key !== g.key) && (!thinking || thinking.key !== g.key)).map(g => {
+    const busy = liveHooks.busy ? liveHooks.busy() : null; // strokes someone else is still drawing
+    badges.innerHTML = groups.filter(g => (!pop || pop.key !== g.key) && (!thinking || thinking.key !== g.key) && !(busy && busy.size && g.strokeIds.some(id => busy.has(id)))).map(g => {
       const s = toScreen(g.rect);
       return `<button type="button" class="badge" data-key="${g.key}" style="left:${s.x + s.w}px;top:${s.y}px" title="Find the matching component" aria-label="Find component for this sketch">${I.spark}<span class="bl">${g.kind === 'frame' ? 'Find frame' : 'Find component'}</span></button>`;
     }).join('');
@@ -1134,6 +1142,21 @@
       return;
     }
     if (pop) closePop();
+    if (tool === 'proto') {
+      const so = selO.size === 1 ? objById([...selO][0]) : null;
+      if (so) {
+        const [px0, py0] = plusPoint(so);
+        if (Math.hypot(wx - px0, wy - py0) < 11 / view.z) {
+          drag = { mode: 'wire', src: so, x: wx, y: wy, target: null, prev: snapshot() };
+          renderOverlay(); return;
+        }
+      }
+      const w = wireAt(wx, wy);
+      clearSel(); protoSel = null;
+      if (w) { selO.add(w.o.id); protoSel = { oid: w.o.id, iid: w.it.id }; }
+      else { const h = hitTest(wx, wy); if (h && h.objs.length) selO.add(h.objs[0]); }
+      refreshSelection(); return;
+    }
     if (tool === 'frame') {
       // Frame tool: drag to draw a frame (Shift = square); a plain click opens device presets.
       if (selS.size || selO.size) { clearSel(); refreshSelection(); }
@@ -1182,7 +1205,16 @@
   stage.addEventListener('pointermove', e => {
     const [wx, wy] = toWorld(e.clientX, e.clientY);
     lastPointer = [wx, wy];
+    if (liveHooks.cursor) liveHooks.cursor(lastPointer);
+    if (drag && liveHooks.touch) liveHooks.touch(); // live: others see moves, resizes and ink as they happen
     if (!drag) {
+      if (tool === 'proto') {
+        const so = selO.size === 1 ? objById([...selO][0]) : null, pp = so && plusPoint(so);
+        const onPlus = pp && Math.hypot(wx - pp[0], wy - pp[1]) < 11 / view.z;
+        stage.style.cursor = onPlus ? 'crosshair' : wireAt(wx, wy) ? 'pointer' : '';
+        const h = onPlus ? null : hitTest(wx, wy), id = (h && h.objs[0]) || null;
+        if (id !== hoverO) { hoverO = id; renderOverlay(); }
+      }
       if (tool === 'select') {
         const hk = hitHandle(wx, wy);
         stage.style.cursor = hk ? CURSOR[hk] : '';
@@ -1190,6 +1222,13 @@
         if (id !== hoverO) { hoverO = id; renderOverlay(); }
       }
       return;
+    }
+    if (drag.mode === 'wire') {
+      drag.x = wx; drag.y = wy;
+      const own = screenOf(drag.src);
+      const t = [...topFrames()].reverse().find(f => inside(f, wx, wy));
+      drag.target = t && t.id !== drag.src.id && (!own || t.id !== own.id) ? t : null;
+      renderOverlay(); return;
     }
     if (drag.mode === 'frameClick') {
       if (Math.hypot(wx - drag.sx, wy - drag.sy) * view.z < 3) return;
@@ -1273,10 +1312,23 @@
     const d = drag; drag = null;
     guides = [];
     stage.classList.remove('panning');
+    if (d.mode === 'wire') {
+      stage.style.cursor = '';
+      if (!d.target) { renderOverlay(); return; }
+      if ((d.src.links || []).some(l => l.to === d.target.id)) { renderOverlay(); toast(`Already connected to ${frameName(d.target)}`); return; }
+      const it = newInteraction(d.target.id);
+      (d.src.links = d.src.links || []).push(it);
+      commit(d.prev);
+      protoSel = { oid: d.src.id, iid: it.id };
+      update();
+      toast(`Arrow to ${frameName(d.target)}`);
+      return;
+    }
     if (d.mode === 'pen') {
       if (d.s.pts.length < 2) d.s.pts.push([d.s.pts[0][0] + 0.1, d.s.pts[0][1]]);
       commit(d.prev);
       lastStrokeId = d.s.id;
+      if (liveHooks.strokeDone) liveHooks.strokeDone(d.s.id);
       update();
       scheduleBadges(); // tags appear after a pause; nothing opens until you click one
     } else if (d.mode === 'frameClick') {
@@ -1335,9 +1387,12 @@
   // Tools & palette
   // =========================================================================
   function setTool(t) {
+    const was = tool;
     tool = t; stage.dataset.tool = t;
+    if (was === 'proto' || t === 'proto') { protoSel = null; if (typeof refreshSelection === 'function') refreshSelection(); }
+    if (liveHooks.cursor && lastPointer) liveHooks.cursor(lastPointer);
     document.querySelectorAll('.tool[data-tool]').forEach(b => { const on = b.dataset.tool === t; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
-    if (t !== 'select' && hoverO) { hoverO = null; renderOverlay(); }
+    if (t !== 'select' && t !== 'proto' && hoverO) { hoverO = null; renderOverlay(); }
   }
   document.querySelectorAll('.tool[data-tool]').forEach(b => b.addEventListener('click', () => {
     if (b.dataset.tool === 'pen' && tool === 'pen') return togglePalette();
@@ -1404,6 +1459,7 @@
     const sel = [...selO].map(objById).filter(Boolean);
     if (!sel.length || selS.size) { inspector.hidden = true; return; }
     inspector.hidden = false;
+    if (tool === 'proto') return renderProtoInspector(sel);
     if (sel.length > 1) {
       const kinds = [...new Set(sel.map(o => (o.kind === 'frame' ? 'Frame' : o.kind === 'asset' ? (o.svg ? 'Vector' : 'Image') : TYPES[o.type].name)))];
       inspector.innerHTML = `<div class="ins-head"><div><div class="t">${sel.length} layers</div><div class="s">${esc(kinds.slice(0, 4).join(', '))}</div></div></div>
@@ -1421,6 +1477,7 @@
       inspector.innerHTML = `<div class="ins-head"><div><div class="t">${esc(frameName(o))}</div><div class="s">Frame · ${where}</div></div>${par ? '' : `<button type="button" class="present-btn" data-a="present" title="Present (Ctrl Alt Enter)"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>Present</button>`}</div>
         ${par ? alignRow(false) : ''}
         <label class="ins-field"><span>Name</span><input data-f="name" autocomplete="off" maxlength="80" value="${esc(frameName(o))}"></label>
+        ${par ? '' : `<label class="ins-field"><span>State</span><input data-p="state" autocomplete="off" maxlength="40" placeholder="e.g. Logged out, Empty, Error" value="${esc(o.state || '')}"></label>`}
         <label class="ins-field"><span>Device</span><select data-f="device">${opts}</select></label>
         <div class="ins-row"><label class="ins-field"><span>W</span><input data-f="w" type="number" inputmode="numeric" min="1" autocomplete="off" value="${Math.round(o.w)}"></label><label class="ins-field"><span>H</span><input data-f="h" type="number" inputmode="numeric" min="1" autocomplete="off" value="${Math.round(o.h)}"></label></div>
         <label class="clip-toggle" title="Hide anything that extends past the frame's edges"><input type="checkbox" data-f="clip"${o.clip !== false ? ' checked' : ''}><span class="box" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.2l2.3 2.3 4.7-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="lbl">Clip content</span></label>
@@ -1538,11 +1595,16 @@
   // =========================================================================
   const sidebar = $('#sidebar'), sideToggle = $('#sideToggle');
   const collapsed = new Set(); // frames folded in the Layers panel
-  sideToggle.onclick = () => {
-    sidebar.hidden = !sidebar.hidden;
-    sideToggle.setAttribute('aria-expanded', String(!sidebar.hidden));
+  /** The brand pill and the panel are one thing: opening swaps the pill for the panel's own header. */
+  function setSidebar(open, focus = true) {
+    sidebar.hidden = !open;
+    document.body.classList.toggle('side-open', open);
+    sideToggle.setAttribute('aria-expanded', String(open));
     renderSidebar();
-  };
+    if (focus) (open ? $('#sideClose') : sideToggle).focus({ preventScroll: true });
+  }
+  sideToggle.onclick = () => setSidebar(sidebar.hidden);
+  $('#sideClose').onclick = () => setSidebar(false);
   function renderSidebar() {
     $('#libCount').textContent = `${enabled.size} of ${KITS.length} on`;
     if (sidebar.hidden) return;
@@ -1589,7 +1651,7 @@
   const selbar = $('#selbar');
   function positionSelbar() {
     const sb = selBox();
-    if (!sb || pop || (drag && (drag.mode === 'marquee' || drag.mode === 'move'))) { selbar.hidden = true; return; }
+    if (!sb || pop || tool === 'proto' || (drag && (drag.mode === 'marquee' || drag.mode === 'move'))) { selbar.hidden = true; return; }
     selbar.hidden = false;
     const nObj = selO.size, nSk = groups.filter(g => g.strokeIds.some(id => selS.has(id))).length;
     const parts = [];
@@ -1755,7 +1817,7 @@ ${pretty(markup(roots), 1, false)}</body>
     const css = `@import url('${FONTS}');\n${kitCSS(kits)}`.replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
     const one = roots.length === 1 ? roots[0] : null;
     const name = !one ? 'Artboard' : one.kind === 'frame' ? 'Screen' : ((one.kind === 'asset' ? (one.name || 'Image') : TYPES[one.type].name).replace(/[^A-Za-z0-9]/g, '') || 'Layer').replace(/^\d/, 'L$&');
-    return `// ${name}.jsx: generated by Sketch to UI
+    return `// ${name}.jsx: generated by Scrib
 // ${describe(roots)}${kits.length ? ` · ${kits.map(k => k.name).join(', ')}` : ''}
 // Paste into any React project. The styles ship inside the component.
 
@@ -1818,6 +1880,164 @@ ${pretty(markup(roots), 3, true)}    </>
   // =========================================================================
   // Present (Figma's prototype view), autosave, layer order
   // =========================================================================
+  // =========================================================================
+  // Arrows (wireframe flows). With the Arrow tool, drag the + on any layer onto
+  // a screen to draw an arrow between them. Arrows are only documentation:
+  // nothing animates. Each arrow can carry a short label, and each screen can
+  // carry a state tag ("Logged out", "Error") shown above it.
+  // Stored as o.links = [{ id, to, label }] and frame.state = 'text', so undo,
+  // autosave and live sessions carry them like any other layer data.
+  // =========================================================================
+  const randKey = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const newInteraction = to => ({ id: randKey(), to, label: '' }); // one arrow
+  /** The top-level frame (screen) a layer lives on. */
+  const screenOf = o => { let f = o; while (f && parentOf(f)) f = parentOf(f); return f && f.kind === 'frame' ? f : null; };
+  const linkOk = l => { const t = objById(l.to); return !!(t && t.kind === 'frame'); };
+  const layerTitle = o => (o.kind === 'frame' ? frameName(o) : o.kind === 'asset' ? (o.name || 'Image') : (kitById(o.kit) || KITS[0]).names[o.type] || TYPES[o.type].name);
+  let protoSel = null; // { oid, iid }: the arrow picked on the canvas or in the panel
+  /** Older canvases stored prototype interactions; keep their arrows, drop the rest. */
+  function migrateLinks(list) {
+    for (const o of list) {
+      if (Array.isArray(o.proto)) {
+        const keep = o.proto.filter(it => it && it.to != null && ['navigate', 'overlay', 'swap'].includes(it.action));
+        if (keep.length) o.links = [...(o.links || []), ...keep.map(it => ({ id: it.id || randKey(), to: it.to, label: '' }))];
+        delete o.proto;
+      }
+      delete o.flow;
+    }
+  }
+
+  // ---- Drawing the arrows ----------------------------------------------------
+  function wireGeom(a, b) {
+    const z = view.z, ac = [a.x + a.w / 2, a.y + a.h / 2], bc = [b.x + b.w / 2, b.y + b.h / 2];
+    const dx = bc[0] - ac[0], dy = bc[1] - ac[1], inset = Math.min(10 / z, b.h / 2, b.w / 2);
+    let p0, p1, n;
+    if (Math.abs(dx) >= Math.abs(dy) * 0.6) {
+      const r = dx >= 0; n = [r ? 1 : -1, 0];
+      p0 = [r ? a.x + a.w : a.x, ac[1]];
+      p1 = [r ? b.x : b.x + b.w, clamp(ac[1], b.y + inset, b.y + b.h - inset)];
+    } else {
+      const d = dy >= 0; n = [0, d ? 1 : -1];
+      p0 = [ac[0], d ? a.y + a.h : a.y];
+      p1 = [clamp(ac[0], b.x + inset, b.x + b.w - inset), d ? b.y : b.y + b.h];
+    }
+    const head = 9 / z, end = [p1[0] - n[0] * head, p1[1] - n[1] * head];
+    const k = Math.max(36 / z, Math.hypot(end[0] - p0[0], end[1] - p0[1]) * 0.42);
+    const c0 = [p0[0] + n[0] * k, p0[1] + n[1] * k], c1 = [end[0] - n[0] * k, end[1] - n[1] * k];
+    const d = `M${p0[0]} ${p0[1]}C${c0[0]} ${c0[1]} ${c1[0]} ${c1[1]} ${end[0]} ${end[1]}`;
+    const w = 5 / z, px0 = -n[1], py0 = n[0];
+    const tri = `M${p1[0]} ${p1[1]}L${end[0] + px0 * w} ${end[1] + py0 * w}L${end[0] - px0 * w} ${end[1] - py0 * w}Z`;
+    const pts = [];
+    for (let i = 0; i <= 24; i++) {
+      const t = i / 24, u = 1 - t;
+      pts.push([u * u * u * p0[0] + 3 * u * u * t * c0[0] + 3 * u * t * t * c1[0] + t * t * t * end[0], u * u * u * p0[1] + 3 * u * u * t * c0[1] + 3 * u * t * t * c1[1] + t * t * t * end[1]]);
+    }
+    return { d, tri, p0, pts };
+  }
+  const plusPoint = o => [o.x + o.w, o.y + o.h / 2];
+  function distToSeg(x, y, a, b) {
+    const vx = b[0] - a[0], vy = b[1] - a[1], l = vx * vx + vy * vy || 1;
+    const t = clamp(((x - a[0]) * vx + (y - a[1]) * vy) / l, 0, 1);
+    return Math.hypot(x - (a[0] + vx * t), y - (a[1] + vy * t));
+  }
+  function wireAt(x, y) {
+    let best = null, bd = 6 / view.z;
+    for (const o of objects) for (const it of o.links || []) {
+      if (!linkOk(it)) continue;
+      const g = wireGeom(o, objById(it.to));
+      for (let i = 1; i < g.pts.length; i++) { const d = distToSeg(x, y, g.pts[i - 1], g.pts[i]); if (d < bd) { bd = d; best = { o, it }; } }
+    }
+    return best;
+  }
+  const chip = (cx, cy, text, px, fill, color = '#fff') => {
+    const tw = px(text.length * 6.3 + 16), th = px(19);
+    return `<rect x="${cx - tw / 2}" y="${cy - th / 2}" width="${tw}" height="${th}" rx="${th / 2}" fill="${fill}"/><text x="${cx}" y="${cy + px(3.8)}" text-anchor="middle" font-size="${px(11)}" font-family="IBM Plex Sans, system-ui, sans-serif" font-weight="600" fill="${color}">${esc(text)}</text>`;
+  };
+  /** State tags and arrows: always shown; the + and picking only with the Arrow tool. */
+  function protoOverlay(px) {
+    const B = '#2c63e8', editing = tool === 'proto';
+    let out = '';
+    // State tag above each screen, on the right (the name sits on the left)
+    for (const f of topFrames()) if (f.state) {
+      const t = f.state, tw = px(t.length * 6.3 + 22), th = px(19), x = f.x + f.w - tw, y = f.y - th - px(5);
+      out += `<rect x="${x}" y="${y}" width="${tw}" height="${th}" rx="${th / 2}" fill="#1f1c17"/><circle cx="${x + px(9)}" cy="${y + th / 2}" r="${px(3)}" fill="#f5c542"/><text x="${x + px(16)}" y="${y + px(13.3)}" font-size="${px(11)}" font-family="IBM Plex Sans, system-ui, sans-serif" font-weight="600" fill="#fff">${esc(t)}</text>`;
+    }
+    const selId = selO.size === 1 ? [...selO][0] : null;
+    for (const o of objects) for (const it of o.links || []) {
+      if (!linkOk(it)) continue;
+      const on = editing && (protoSel ? protoSel.oid === o.id && protoSel.iid === it.id : o.id === selId);
+      const dim = editing && selId && !on && o.id !== selId;
+      const g = wireGeom(o, objById(it.to));
+      out += `<g opacity="${dim ? 0.35 : 1}"><path d="${g.d}" fill="none" stroke="${B}" stroke-width="${px(on ? 2.5 : 1.75)}" stroke-linecap="round"/><path d="${g.tri}" fill="${B}"/><circle cx="${g.p0[0]}" cy="${g.p0[1]}" r="${px(3.5)}" fill="${B}"/>`;
+      if (it.label) out += chip(g.pts[12][0], g.pts[12][1] - px(13), it.label, px, B);
+      out += '</g>';
+    }
+    if (!editing) return out;
+    if (drag && drag.mode === 'wire') {
+      const t = drag.target;
+      if (t) out += `<rect x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" fill="rgba(44,99,232,.06)" stroke="${B}" stroke-width="${px(2)}"/>`;
+      const g = wireGeom(drag.src, t || { x: drag.x, y: drag.y, w: 0, h: 0 });
+      out += `<path d="${g.d}" fill="none" stroke="${B}" stroke-width="${px(2)}" stroke-linecap="round"/><path d="${g.tri}" fill="${B}"/>`;
+    }
+    const so = selId && objById(selId);
+    if (so && !(drag && drag.mode === 'wire')) {
+      const [x, y] = plusPoint(so);
+      out += `<circle cx="${x}" cy="${y}" r="${px(8)}" fill="${B}" stroke="#fff" stroke-width="${px(1.5)}"/><path d="M${x - px(3.5)} ${y}H${x + px(3.5)}M${x} ${y - px(3.5)}V${y + px(3.5)}" stroke="#fff" stroke-width="${px(1.6)}" stroke-linecap="round"/>`;
+    }
+    return out;
+  }
+
+  // ---- Arrow panel ------------------------------------------------------------
+  function renderProtoInspector(sel) {
+    if (sel.length !== 1) {
+      inspector.innerHTML = '<div class="ins-head"><div><div class="t">Arrows</div><div class="s">Select one layer, then drag its + onto a screen.</div></div></div>';
+      return;
+    }
+    const o = sel[0], top = o.kind === 'frame' && !parentOf(o), list = (o.links || []).filter(linkOk), scr = screenOf(o);
+    inspector.innerHTML = `<div class="ins-head"><div><div class="t">${esc(layerTitle(o))}</div><div class="s">Arrows${scr && scr !== o ? ` · on ${esc(frameName(scr))}` : ''}</div></div></div>
+      ${top ? `<label class="ins-field"><span>State</span><input data-p="state" autocomplete="off" maxlength="40" placeholder="e.g. Logged out, Empty, Error" value="${esc(o.state || '')}"></label>` : ''}
+      <div class="pi-head"><span>Arrows to</span></div>
+      ${list.length ? list.map(it => {
+        const on = protoSel && protoSel.oid === o.id && protoSel.iid === it.id;
+        return `<div class="pi-card${on ? ' open' : ''}" data-iid="${it.id}"><div class="pi-card-head"><button type="button" class="pi-sum" data-pi="${it.id}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6l6 6-6 6"/></svg><span>${esc(frameName(objById(it.to)))}</span></button><button type="button" class="icon-btn pi-del" data-pdel="${it.id}" aria-label="Remove arrow to ${esc(frameName(objById(it.to)))}" title="Remove arrow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+          <div class="pi-grid"><label class="ins-field"><span>Label on the arrow</span><input data-p="label" data-l="${it.id}" autocomplete="off" maxlength="40" placeholder="Optional, e.g. Tap Continue" value="${esc(it.label || '')}"></label></div></div>`;
+      }).join('') : '<p class="pi-empty">Drag the blue <b>+</b> on the layer onto a screen to draw an arrow.</p>'}`;
+  }
+  inspector.addEventListener('change', e => {
+    const el = e.target.closest('[data-p]'); if (!el || !(tool === 'proto' || el.dataset.p === 'state')) return;
+    const o = objById([...selO][0]); if (!o) return;
+    const prev = insPrev || snapshot();
+    const v = el.value.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (el.dataset.p === 'state') { if (v) o.state = v; else delete o.state; }
+    else if (el.dataset.p === 'label') {
+      const it = (o.links || []).find(l => l.id === el.dataset.l); if (!it) return;
+      it.label = v; protoSel = { oid: o.id, iid: it.id };
+    } else return;
+    commit(prev); insPrev = snapshot(); update();
+  });
+  inspector.addEventListener('click', e => {
+    if (tool !== 'proto') return;
+    const o = objById([...selO][0]); if (!o) return;
+    const sum = e.target.closest('[data-pi]'), del = e.target.closest('[data-pdel]');
+    if (sum) { protoSel = { oid: o.id, iid: sum.dataset.pi }; renderInspector(); renderOverlay(); return; }
+    if (!del) return;
+    const prev = snapshot();
+    o.links = (o.links || []).filter(l => l.id !== del.dataset.pdel);
+    if (!o.links.length) delete o.links;
+    protoSel = { oid: o.id, iid: null };
+    commit(prev); update();
+  });
+  function removeSelectedInteraction() {
+    const o = protoSel && objById(protoSel.oid);
+    if (!o || !o.links || !o.links.some(l => l.id === protoSel.iid)) return false;
+    const prev = snapshot();
+    o.links = o.links.filter(l => l.id !== protoSel.iid);
+    if (!o.links.length) delete o.links;
+    protoSel = { oid: o.id, iid: null };
+    commit(prev); update(); toast('Arrow removed');
+    return true;
+  }
+
   const presentEl = document.createElement('div');
   presentEl.className = 'present'; presentEl.hidden = true;
   presentEl.setAttribute('role', 'dialog'); presentEl.setAttribute('aria-label', 'Presentation');
@@ -1840,9 +2060,12 @@ ${pretty(markup(roots), 3, true)}    </>
   presentEl.addEventListener('click', e => { if (e.target.closest('.pr-x') || e.target === presentEl) closePresent(); });
   $('#zoomPresent').onclick = () => present([...selO].map(objById).find(o => o && o.kind === 'frame') || null);
 
-  const SAVE_KEY = 'sketch-to-ui:v1';
+  const SOLO_KEY = 'sketch-to-ui:v1';
+  const ROOM_PARAM = (() => { const r = new URLSearchParams(location.search).get('room'); return r && /^[a-z0-9-]{4,40}$/i.test(r) ? r : null; })();
+  let SAVE_KEY = ROOM_PARAM ? 'scrib:room:' + ROOM_PARAM : SOLO_KEY; // a live room keeps its own copy
   let saveTimer;
   function save() {
+    if (liveHooks.touch) liveHooks.touch();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try { localStorage.setItem(SAVE_KEY, JSON.stringify({ strokes, objects, nextId, view, enabled: [...enabled], penColor, penWidth })); } catch { /* storage full or blocked */ }
@@ -1854,6 +2077,7 @@ ${pretty(markup(roots), 3, true)}    </>
       if (!d || !Array.isArray(d.strokes)) return false;
       strokes = d.strokes; objects = Array.isArray(d.objects) ? d.objects : []; nextId = d.nextId || 1;
       migrateParents(objects); // canvases saved before frames owned their contents
+      migrateLinks(objects); // prototype interactions from an earlier version become plain arrows
       if (d.view && isFinite(d.view.z)) view = d.view;
       if (Array.isArray(d.enabled) && d.enabled.some(k => kitById(k))) { enabled.clear(); d.enabled.forEach(k => kitById(k) && enabled.add(k)); }
       if (d.penColor) penColor = d.penColor;
@@ -2236,6 +2460,8 @@ ${pretty(markup(roots), 3, true)}    </>
       if (/^[1-9]$/.test(k) && Number(k) <= n) { pop.idx = Number(k) - 1; return placeCurrent(); }
     }
     if (e.code === 'Space' && !spaceDown) { spaceDown = true; stage.classList.add('space'); e.preventDefault(); return; }
+    if (mod && e.key === '\\') { e.preventDefault(); setSidebar(sidebar.hidden); return; }
+    if (!mod && !e.altKey && e.shiftKey && k === 'd') { e.preventDefault(); toggleTheme(); return; }
     if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }
     if (mod && k === 'a') { e.preventDefault(); selS = new Set(strokes.map(s => s.id)); selO = new Set(objects.map(o => o.id)); setTool('select'); refreshSelection(); return; }
@@ -2263,7 +2489,7 @@ ${pretty(markup(roots), 3, true)}    </>
     else if (k === 'c') openVirtual('comp');
     else if (k === 'tab' && groups.length) { e.preventDefault(); startThinking(groups[0].key); }
     else if (k === 'escape') { clearSel(); closePalette(); refreshSelection(); }
-    else if (k === 'delete' || k === 'backspace') deleteSelection();
+    else if (k === 'delete' || k === 'backspace') { if (!(tool === 'proto' && protoSel && protoSel.iid && removeSelectedInteraction())) deleteSelection(); }
     else if (k.startsWith('arrow') && (selO.size || selS.size)) {
       e.preventDefault();
       const d = e.shiftKey ? 10 : 1, dx = k === 'arrowleft' ? -d : k === 'arrowright' ? d : 0, dy = k === 'arrowup' ? -d : k === 'arrowdown' ? d : 0;
@@ -2279,7 +2505,7 @@ ${pretty(markup(roots), 3, true)}    </>
   // Update cycle
   // =========================================================================
   // Read-only hook for checking recognition from the console.
-  window.__sketchToUI = { groups: () => groups.map(g => ({ kind: g.kind, guess: g.options[0], options: g.options, desc: shapeDesc(g), strokes: g.strokeIds.length, rect: [Math.round(g.rect.x), Math.round(g.rect.y), Math.round(g.rect.w), Math.round(g.rect.h)] })) };
+  window.__sketchToUI = { layers: () => JSON.parse(JSON.stringify(objects)), tool: () => tool, groups: () => groups.map(g => ({ kind: g.kind, guess: g.options[0], options: g.options, desc: shapeDesc(g), strokes: g.strokeIds.length, rect: [Math.round(g.rect.x), Math.round(g.rect.y), Math.round(g.rect.w), Math.round(g.rect.h)] })) };
 
   function update() {
     normalizeTree();
@@ -2342,11 +2568,693 @@ ${pretty(markup(roots), 3, true)}    </>
     badgesReady = true; renderBadges();
   }
 
-  window.addEventListener('resize', () => { applyView(); if (!presentEl.hidden) renderPresent(); });
+  // =========================================================================
+  // Live mode: up to 10 people in one room see each other's cursors and ink
+  // as it is drawn, and every edit syncs. Transport is the bundled Node relay
+  // (Server-Sent Events) or, on a static host, Supabase Realtime (live-config.js).
+  // Each change is sent as a per-layer diff, so people editing different layers
+  // never overwrite each other; undo only reverts your own changes.
+  // =========================================================================
+  const LIVE_MAX = 10;
+  const LIVE_COLORS = ['#d1242f', '#2c63e8', '#15803d', '#c2410c', '#7c3aed', '#be185d', '#0e7490', '#a16207', '#0f766e', '#475569']; // all ≥ 4.5:1 with white text
+  const NAMES_A = ['Swift', 'Quiet', 'Bright', 'Bold', 'Calm', 'Clever', 'Lucky', 'Sunny', 'Brave', 'Gentle', 'Rapid', 'Witty'];
+  const NAMES_B = ['Otter', 'Falcon', 'Panda', 'Fox', 'Heron', 'Lynx', 'Koala', 'Robin', 'Tiger', 'Whale', 'Owl', 'Gecko'];
+  const pickOne = a => a[Math.floor(Math.random() * a.length)];
+  const randId = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
+  const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } };
+  const roundNum = (k, v) => (typeof v === 'number' && !Number.isInteger(v) ? Math.round(v * 100) / 100 : v);
+  const J = x => JSON.stringify(x, roundNum);
+  const CHUNK = 48000; // bytes per message; realtime services cap payload size
+
+  const live = {
+    on: false, host: false, room: null, tr: null, kind: null, status: 'off', synced: false, joinedAt: 0,
+    me: { id: randId(12), name: (lsGet('scrib:name') || `${pickOne(NAMES_A)} ${pickOne(NAMES_B)}`).slice(0, 24), since: Date.now() + Math.random() },
+    peers: [], cursors: new Map(), drawing: new Map(), // peer id -> stroke ids they're still drawing
+    sentS: new Map(), sentLen: new Map(), sentLast: new Map(), sentO: new Map(), sentOrder: '',
+    dirty: false, cur: null, curSent: null, timer: null,
+    seq: 0, log: [], snap: null, helloTimer: null, helloTries: 0, myStart: 0, avail: undefined, pendingRoom: null,
+  };
+  const cursorsEl = $('#cursors'), liveBtn = $('#liveBtn'), livePanel = $('#livePanel'), liveFaces = $('#liveFaces');
+  const liveTick = () => (live.kind === 'supabase' ? 40 + 30 * live.peers.length : 40);
+  const isMine = id => id >= live.myStart && id < live.myStart + 1e6;
+
+  liveHooks.seq = () => live.seq;
+  liveHooks.touch = () => { if (live.on) { live.dirty = true; liveSchedule(); } };
+  // Cursor = [x, y, tool]; the tool letter lets others see a pencil while you draw, a hand while you pan.
+  const TOOL_CODE = { pen: 'p', hand: 'h', frame: 'f', select: 's' };
+  liveHooks.cursor = p => { if (!live.on) return; live.cur = p ? [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10, (drag && drag.mode === 'pan') || spaceDown ? 'h' : TOOL_CODE[tool] || 's'] : null; liveSchedule(); };
+  liveHooks.view = () => { if (live.cursors.size) positionCursors(); };
+  liveHooks.strokeDone = id => { live.sentS.delete(id); }; // finished strokes are always resent whole
+  liveHooks.busy = () => { const b = new Set(); if (live.on) for (const ids of live.drawing.values()) ids.forEach(id => b.add(id)); return b; };
+  liveHooks.restored = d => { // undo / redo: keep everyone else's changes made since that snapshot
+    if (!live.on) return;
+    const hasS = new Set(strokes.map(s => s.id)), hasO = new Set(objects.map(o => o.id));
+    for (const { seq, m } of live.log) if (seq > (d.lseq || 0)) applyOps(m, { replay: true, hasS, hasO });
+  };
+
+  // ---------- transports ----------
+  function relayTransport(h) {
+    let es = null, closed = false, opened = 0, queue = Promise.resolve(), ready, setReady;
+    const resetReady = () => { ready = new Promise(r => { setReady = r; }); };
+    resetReady();
+    const qs = () => `room=${encodeURIComponent(live.room)}&id=${live.me.id}`;
+    const post = body => fetch(`/live/send?${qs()}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+      .then(r => { if (!r.ok && r.status !== 409) throw new Error(r.status); })
+      .catch(() => { if (!closed) h.status('reconnecting'); });
+    return {
+      connect() {
+        es = new EventSource(`/live/events?${qs()}&name=${encodeURIComponent(live.me.name)}&since=${live.me.since}`);
+        es.onopen = () => { h.status('live'); setReady(); if (opened++) h.reopened(); };
+        es.onerror = () => { if (closed) return; h.status('reconnecting'); resetReady(); };
+        es.addEventListener('full', () => { closed = true; es.close(); h.full(); });
+        es.onmessage = e => {
+          let d; try { d = JSON.parse(e.data); } catch { return; }
+          if (d.t === 'peers') h.peers(d.peers);
+          else if (d.t === 'msg') h.message(d.from, d.msg);
+        };
+      },
+      send(msg) { const body = J(msg); queue = queue.then(() => ready).then(() => (closed ? null : post(body))); },
+      rename(name) { this.send({ t: 'name', name }); },
+      close() { closed = true; if (es) es.close(); },
+    };
+  }
+  function loadScript(src) {
+    return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = res; s.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(s); });
+  }
+  let sbClient = null; // one Supabase client (one socket) for the room and the directory
+  async function supa(cfg) {
+    if (!window.supabase) await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.80.0/dist/umd/supabase.js');
+    if (!sbClient) sbClient = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey, { auth: { persistSession: false, autoRefreshToken: false }, realtime: { params: { eventsPerSecond: 40 } } });
+    return sbClient;
+  }
+  function supabaseTransport(h, cfg) {
+    let client = null, ch = null, closed = false, subscribed = 0;
+    return {
+      async connect() {
+        client = await supa(cfg);
+        if (closed) return;
+        ch = client.channel('scrib-' + live.room, { config: { broadcast: { self: false }, presence: { key: live.me.id } } });
+        ch.on('broadcast', { event: 'm' }, ({ payload }) => { if (payload) h.message(payload.from, payload.msg); });
+        ch.on('presence', { event: 'sync' }, () => {
+          const st = ch.presenceState();
+          h.peers(Object.entries(st).map(([id, metas]) => ({ id, name: (metas[0] && metas[0].name) || 'Guest', since: (metas[0] && metas[0].since) || 0 })));
+        });
+        ch.subscribe(async status => {
+          if (closed) return;
+          if (status === 'SUBSCRIBED') { await ch.track({ name: live.me.name, since: live.me.since }); h.status('live'); if (subscribed++) h.reopened(); }
+          else h.status('reconnecting');
+        });
+      },
+      send(msg) { if (ch && !closed) ch.send({ type: 'broadcast', event: 'm', payload: { from: live.me.id, msg: JSON.parse(J(msg)) } }); },
+      rename(name) { if (ch) ch.track({ name, since: live.me.since }); },
+      close() { closed = true; if (client && ch) client.removeChannel(ch); },
+    };
+  }
+  async function liveAvailable() {
+    if (live.avail !== undefined) return live.avail;
+    const cfg = window.SCRIB_LIVE || {};
+    if (cfg.supabaseUrl && cfg.supabaseKey) return (live.avail = { kind: 'supabase', cfg });
+    try {
+      const r = await fetch('/live/ping', { cache: 'no-store' });
+      if (r.ok && (await r.json()).ok) return (live.avail = { kind: 'relay' });
+    } catch { /* no relay on this host */ }
+    return (live.avail = null);
+  }
+
+  // ---------- incoming ----------
+  const handlers = {
+    status(s) { live.status = s; renderLive(); },
+    full() { liveStop(); toast('That live room is full (10 people). Try again in a moment.', 4200); },
+    peers(list) {
+      const all = list.some(p => p.id === live.me.id) ? [...list] : [...list, { id: live.me.id, name: live.me.name, since: live.me.since }];
+      all.sort((a, b) => a.since - b.since || (a.id < b.id ? -1 : 1));
+      if (all.findIndex(p => p.id === live.me.id) >= LIVE_MAX) return handlers.full();
+      live.peers = all.slice(0, LIVE_MAX).map((p, i) => ({ id: p.id, name: p.id === live.me.id ? live.me.name : p.name, since: p.since, color: LIVE_COLORS[i] }));
+      for (const [id, c] of live.cursors) if (!live.peers.some(p => p.id === id)) { c.el.remove(); live.cursors.delete(id); }
+      for (const id of live.drawing.keys()) if (!live.peers.some(p => p.id === id)) live.drawing.delete(id);
+      if (!live.synced) requestState();
+      renderLive(); positionCursors();
+      cursorsEl.style.setProperty('--live-tick', liveTick() + 'ms');
+    },
+    message(from, m) {
+      if (!live.on || !m || from === live.me.id || (m.to && m.to !== live.me.id)) return;
+      if ('c' in m) moveCursor(from, m.c);
+      if (m.t === 'ops' && (m.us || m.ap)) { if (m.dr) live.drawing.set(from, m.dr); else live.drawing.delete(from); }
+      if (m.t === 'hello') { if (live.synced && isResponder(from)) sendSnap(from); }
+      else if (m.t === 'ops') {
+        if (m.us || m.ap || m.rs || m.uo || m.ro || m.oo) {
+          applyOps(m); live.log.push({ seq: ++live.seq, m }); if (live.log.length > 3000) live.log.splice(0, 1000);
+          liveRefresh();
+        }
+      }
+      else if (m.t === 'snap') takeSnap(m);
+      else if (m.t === 'bye') removeCursor(from);
+    },
+    reopened() { live.synced = false; live.helloTries = 0; requestState(); }, // missed messages while offline: fetch the room again
+  };
+
+  function requestState() {
+    clearTimeout(live.helloTimer);
+    const others = live.peers.filter(p => p.id !== live.me.id);
+    if (!others.length) {
+      // Alone in the room. A joiner waits a moment in case the others haven't shown up yet.
+      if (!live.host && Date.now() - live.joinedAt < 1600) { live.helloTimer = setTimeout(requestState, 1700 - (Date.now() - live.joinedAt)); return; }
+      return markSynced();
+    }
+    if (live.helloTries >= 4) return markSynced();
+    live.helloTries++;
+    live.tr.send({ t: 'hello' });
+    live.helloTimer = setTimeout(() => { if (!live.synced) requestState(); }, 2500);
+  }
+  function markSynced() {
+    clearTimeout(live.helloTimer);
+    live.synced = true; live.dirty = true; renderLive(); liveSchedule();
+  }
+  function isResponder(asker) {
+    const first = live.peers.find(p => p.id !== asker);
+    return first && first.id === live.me.id;
+  }
+  function sendSnap(to) {
+    const sid = randId(6), parts = [];
+    let cur = { s: [], o: [] }, size = 0;
+    const add = (k, item) => {
+      const j = J(item);
+      if (size + j.length > CHUNK && (cur.s.length || cur.o.length)) { parts.push(cur); cur = { s: [], o: [] }; size = 0; }
+      cur[k].push(JSON.parse(j)); size += j.length;
+    };
+    strokes.forEach(s => add('s', s)); objects.forEach(o => add('o', o));
+    parts.push(cur);
+    parts.forEach((p, i) => live.tr.send({ t: 'snap', to, sid, part: i, of: parts.length, s: p.s, o: p.o }));
+  }
+  function takeSnap(m) {
+    if (live.synced) return;
+    if (!live.snap || live.snap.sid !== m.sid) live.snap = { sid: m.sid, parts: [] };
+    live.snap.parts[m.part] = m;
+    if (live.snap.parts.filter(Boolean).length < m.of) return;
+    const parts = live.snap.parts; live.snap = null;
+    strokes = parts.flatMap(p => p.s || []); objects = parts.flatMap(p => p.o || []);
+    live.sentS.clear(); live.sentLen.clear(); live.sentLast.clear(); live.sentO.clear();
+    for (const s of strokes) { live.sentS.set(s.id, J(s)); live.sentLen.set(s.id, s.pts.length); live.sentLast.set(s.id, J(s.pts[s.pts.length - 1])); }
+    for (const o of objects) live.sentO.set(o.id, J(o));
+    live.sentOrder = objects.map(o => o.id).join(',');
+    history.length = 0; future.length = 0; live.log = []; // the room's history isn't yours to undo
+    clearSel(); closePop();
+    live.synced = true; clearTimeout(live.helloTimer);
+    liveRefresh(); renderLive();
+    if (strokes.length + objects.length) zoomToFit();
+  }
+
+  function upsert(list, item) {
+    const cur = list.find(x => x.id === item.id);
+    if (!cur) { list.push(item); return; }
+    for (const k of Object.keys(cur)) if (!(k in item)) delete cur[k];
+    Object.assign(cur, item); // keep identity: an in-progress drag may hold this object
+  }
+  function applyOps(m, opt = {}) {
+    const { replay, hasS, hasO } = opt;
+    const track = !replay;
+    for (const s of m.us || []) {
+      if (replay && !hasS.has(s.id) && isMine(s.id)) continue;
+      const item = { ...s, pts: s.pts.map(p => [...p]) };
+      upsert(strokes, item);
+      if (track) { live.sentS.set(s.id, J(item)); live.sentLen.set(s.id, item.pts.length); live.sentLast.set(s.id, J(item.pts[item.pts.length - 1])); }
+    }
+    for (const [id, n, add] of m.ap || []) {
+      const s = strokes.find(x => x.id === id);
+      if (!s || s.pts.length < n) continue;
+      s.pts.length = n; s.pts.push(...add.map(p => [...p]));
+      if (track) { live.sentS.set(id, J(s)); live.sentLen.set(id, s.pts.length); live.sentLast.set(id, J(s.pts[s.pts.length - 1])); }
+    }
+    if (m.rs && m.rs.length) {
+      const r = new Set(m.rs); strokes = strokes.filter(s => !r.has(s.id));
+      if (track) m.rs.forEach(id => { live.sentS.delete(id); live.sentLen.delete(id); live.sentLast.delete(id); });
+    }
+    for (const o of m.uo || []) {
+      if (replay && !hasO.has(o.id) && isMine(o.id)) continue;
+      upsert(objects, { ...o });
+      if (track) live.sentO.set(o.id, J(o));
+    }
+    if (m.ro && m.ro.length) {
+      const r = new Set(m.ro); objects = objects.filter(o => !r.has(o.id));
+      if (track) m.ro.forEach(id => live.sentO.delete(id));
+    }
+    if (m.oo) {
+      const pos = new Map(m.oo.map((id, i) => [id, i]));
+      objects = [...objects.filter(o => pos.has(o.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id)), ...objects.filter(o => !pos.has(o.id))];
+      if (track) live.sentOrder = objects.map(o => o.id).join(',');
+    }
+  }
+  /** Repaint after someone else's change without disturbing what you're doing. */
+  function liveRefresh() {
+    normalizeTree();
+    groups = computeGroups();
+    const hasS = new Set(strokes.map(s => s.id)), hasO = new Set(objects.map(o => o.id));
+    selS = new Set([...selS].filter(id => hasS.has(id)));
+    selO = new Set([...selO].filter(id => hasO.has(id)));
+    if (pop && !pop.virtual && !groupByKey(pop.key)) closePop();
+    if (thinking && !groupByKey(thinking.key)) cancelThinking();
+    renderInk();
+    if (drag && drag.mode === 'pen') drag.el = ink.children[strokes.indexOf(drag.s)] || drag.el;
+    renderObjects(); renderOverlay(); renderBadges(); renderSidebar(); positionSelbar();
+    if (!inspector.contains(document.activeElement)) renderInspector();
+    $('#empty').classList.toggle('hidden', strokes.length + objects.length > 0);
+    save();
+  }
+
+  // ---------- outgoing ----------
+  function liveSchedule() {
+    if (!live.on || live.timer) return;
+    live.timer = setTimeout(liveFlush, liveTick());
+  }
+  function liveFlush() {
+    live.timer = null;
+    if (!live.on || !live.tr) return;
+    const head = { t: 'ops' }, items = [];
+    let changed = false;
+    if (live.cur !== live.curSent) { head.c = live.cur; live.curSent = live.cur; changed = true; }
+    if (live.dirty && live.synced) {
+      live.dirty = false;
+      const pen = drag && drag.mode === 'pen' ? drag.s : null;
+      const ap = [], rs = [], ro = [];
+      const seenS = new Set(), seenO = new Set();
+      for (const s of strokes) {
+        seenS.add(s.id);
+        const j = J(s);
+        if (live.sentS.get(s.id) === j) continue;
+        const n = live.sentLen.get(s.id);
+        if (s === pen && n && s.pts.length > n && J(s.pts[n - 1]) === live.sentLast.get(s.id)) ap.push([s.id, n, JSON.parse(J(s.pts.slice(n)))]);
+        else items.push(['us', JSON.parse(j), j.length]);
+        live.sentS.set(s.id, j); live.sentLen.set(s.id, s.pts.length); live.sentLast.set(s.id, J(s.pts[s.pts.length - 1]));
+      }
+      for (const id of [...live.sentS.keys()]) if (!seenS.has(id)) { live.sentS.delete(id); live.sentLen.delete(id); live.sentLast.delete(id); rs.push(id); }
+      for (const o of objects) {
+        seenO.add(o.id);
+        const j = J(o);
+        if (live.sentO.get(o.id) === j) continue;
+        items.push(['uo', JSON.parse(j), j.length]); live.sentO.set(o.id, j);
+      }
+      for (const id of [...live.sentO.keys()]) if (!seenO.has(id)) { live.sentO.delete(id); ro.push(id); }
+      const order = objects.map(o => o.id).join(',');
+      if (order !== live.sentOrder) { head.oo = objects.map(o => o.id); live.sentOrder = order; }
+      if (ap.length) head.ap = ap;
+      if (pen) head.dr = [pen.id];
+      if (rs.length) head.rs = rs;
+      if (ro.length) head.ro = ro;
+      if (ap.length || rs.length || ro.length || head.oo || items.length) changed = true;
+    }
+    if (!changed) return;
+    // Pack layer updates into messages under the size cap.
+    let msg = head, size = J(head).length;
+    for (const [k, item, len] of items) {
+      if (size + len > CHUNK && (msg.us || msg.uo)) { live.tr.send(msg); msg = { t: 'ops' }; size = 20; }
+      (msg[k] || (msg[k] = [])).push(item); size += len;
+    }
+    live.tr.send(msg);
+  }
+
+  // ---------- cursors ----------
+  function moveCursor(id, c) {
+    const p = live.peers.find(x => x.id === id);
+    if (!p) return;
+    let cur = live.cursors.get(id);
+    if (!c) { if (cur) cur.el.classList.add('away'); return; }
+    if (!cur) {
+      const el = document.createElement('div');
+      el.className = 'rc';
+      el.innerHTML = `<span class="rc-icon"></span><span class="rc-name"></span>`;
+      cursorsEl.appendChild(el);
+      cur = { el, x: 0, y: 0, tool: null };
+      live.cursors.set(id, cur);
+      requestAnimationFrame(() => el.classList.add('in'));
+    }
+    cur.el.classList.remove('away');
+    cur.x = c[0]; cur.y = c[1];
+    const t = CURSOR_ICONS[c[2]] ? c[2] : 's';
+    if (cur.tool !== t) { cur.tool = t; cur.el.dataset.tool = t; cur.el.querySelector('.rc-icon').innerHTML = CURSOR_ICONS[t]; }
+    positionCursor(id, cur);
+  }
+  // Each icon is drawn so its hotspot sits at the element's origin (see .rc[data-tool] in app.css).
+  const CURSOR_ICONS = {
+    s: '<svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4 3l13.5 6.9-5.9 1.7-2.8 5.8z" fill="var(--c)" stroke="#fff" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+    p: '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.3-5L15.6 4.7a2 2 0 0 1 2.8 0l.9.9a2 2 0 0 1 0 2.8L9 18.7z" fill="var(--c)" stroke="#fff" stroke-width="1.7" stroke-linejoin="round"/><path d="M4 20l1.3-5 3.7 3.7z" fill="#fff"/></svg>',
+    h: '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.5" r="11" fill="#fff"/><path d="M8 12V6a1.5 1.5 0 0 1 3 0v5M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V6a1.5 1.5 0 0 1 3 0v6M17 9.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.6-2.8L3.6 15a1.6 1.6 0 0 1 2.4-2.1L8 15" fill="none" stroke="var(--c)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    f: '<svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3v16M3 11h16" stroke="#fff" stroke-width="4" stroke-linecap="round"/><path d="M11 3v16M3 11h16" stroke="var(--c)" stroke-width="2" stroke-linecap="round"/></svg>',
+  };
+  function positionCursor(id, cur) {
+    const p = live.peers.find(x => x.id === id);
+    if (!p) return;
+    cur.el.style.setProperty('--c', p.color);
+    const n = cur.el.querySelector('.rc-name'); if (n.textContent !== p.name) n.textContent = p.name;
+    cur.el.style.transform = `translate(${cur.x * view.z + view.x}px, ${cur.y * view.z + view.y}px)`;
+  }
+  function positionCursors() { for (const [id, c] of live.cursors) positionCursor(id, c); }
+  function removeCursor(id) { const c = live.cursors.get(id); if (c) { c.el.remove(); live.cursors.delete(id); } }
+
+  // ---------- session ----------
+  const roomUrl = () => `${location.origin}${location.pathname}?room=${live.room}`;
+  async function liveStart(room, host) {
+    if (live.on) return;
+    const avail = await liveAvailable();
+    if (!avail) { renderLive(); toast('Live mode isn’t set up on this host yet.', 3600); return false; }
+    live.on = true; live.host = host; live.room = room; live.kind = avail.kind;
+    live.synced = false; live.helloTries = 0; live.joinedAt = Date.now(); live.status = 'connecting';
+    live.sentS.clear(); live.sentLen.clear(); live.sentLast.clear(); live.sentO.clear(); live.sentOrder = '';
+    live.log = []; live.seq = 0; live.cur = live.curSent = null;
+    // Each person creates ids in their own range so two people never mint the same id.
+    nextId = Math.max(nextId, (1 + Math.floor(Math.random() * 8e6)) * 1e6);
+    live.myStart = nextId;
+    window.history.replaceState(null, '', `?room=${room}`);
+    SAVE_KEY = 'scrib:room:' + room;
+    if (!host) { // joining: show the room's last known copy (if any) until the live state arrives
+      strokes = []; objects = []; history.length = 0; future.length = 0;
+      load(); clearSel(); closePop(); update();
+    }
+    live.peers = [{ id: live.me.id, name: live.me.name, since: live.me.since, color: LIVE_COLORS[0] }];
+    live.tr = avail.kind === 'supabase' ? supabaseTransport(handlers, avail.cfg) : relayTransport(handlers);
+    renderLive();
+    try { await live.tr.connect(); }
+    catch { liveStop(); toast('Couldn’t reach the live server. Check your connection and try again.', 4200); return false; }
+    save();
+    dirEnsure().then(dirTrack);
+    return true;
+  }
+  function liveStop() {
+    if (!live.on) return;
+    try { live.tr.send({ t: 'bye' }); } catch { /* already closed */ }
+    try { live.tr.close(); } catch { /* already closed */ }
+    clearTimeout(live.timer); clearTimeout(live.helloTimer);
+    if (dir.tr) dir.tr.untrack();
+    live.on = false; live.tr = null; live.timer = null; live.status = 'off'; live.synced = false; live.peers = [];
+    for (const c of live.cursors.values()) c.el.remove();
+    live.cursors.clear(); live.drawing.clear();
+    window.history.replaceState(null, '', location.pathname);
+    // Back to your own canvas.
+    SAVE_KEY = SOLO_KEY;
+    strokes = []; objects = []; history.length = 0; future.length = 0;
+    load(); clearSel(); closePop(); update(); applyView();
+    renderLive(); renderDir(); dirMaybeClose();
+  }
+  addEventListener('pagehide', () => { if (live.on && live.tr) { try { live.tr.send({ t: 'bye' }); live.tr.close(); } catch { /* closing */ } } });
+
+  // ---------- directory: everyone live on Scrib right now ----------
+  // Relay: the server streams who's in which room. Supabase: a site-wide presence
+  // channel. It's open while you're live, or while the Live panel is open.
+  const dir = { users: [], tr: null, ready: false };
+  const ROOM_RE = /^[a-z0-9-]{4,40}$/i;
+  const cleanName = n => String(n || '').replace(/[\u0000-\u001f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
+  const asUser = (id, m) => (m && ROOM_RE.test(m.room || '') ? { id, name: cleanName(m.name) || 'Guest', room: m.room, since: Number(m.since) || 0 } : null);
+  function dirRelay(onList) {
+    const es = new EventSource('/live/lobby');
+    es.onmessage = e => { let d; try { d = JSON.parse(e.data); } catch { return; } if (d.t === 'lobby' && Array.isArray(d.users)) onList(d.users.map(u => asUser(u.id, u)).filter(Boolean)); };
+    return { track() {}, untrack() {}, close() { es.close(); } }; // the relay knows who's live from the rooms
+  }
+  function dirSupabase(onList, cfg) {
+    let ch = null, closed = false, subscribed = false, meta = null;
+    (async () => {
+      const client = await supa(cfg);
+      if (closed) return;
+      ch = client.channel('scrib-lobby', { config: { presence: { key: live.me.id } } });
+      ch.on('presence', { event: 'sync' }, () => onList(Object.entries(ch.presenceState()).map(([id, metas]) => asUser(id, metas[0])).filter(Boolean)));
+      ch.subscribe(async status => {
+        if (closed) return;
+        subscribed = status === 'SUBSCRIBED';
+        if (subscribed && meta) await ch.track(meta);
+      });
+    })().catch(() => { /* offline: the list just stays empty */ });
+    return {
+      track(m) { meta = m; if (ch && subscribed) ch.track(m); },
+      untrack() { meta = null; if (ch && subscribed) ch.untrack(); },
+      close() { closed = true; if (ch && sbClient) sbClient.removeChannel(ch); },
+    };
+  }
+  async function dirEnsure() {
+    if (dir.tr) return;
+    const avail = await liveAvailable();
+    if (!avail || dir.tr) return;
+    dir.tr = avail.kind === 'supabase' ? dirSupabase(onDir, avail.cfg) : dirRelay(onDir);
+    renderDir();
+  }
+  function dirTrack() { if (dir.tr && live.on) dir.tr.track({ name: live.me.name, room: live.room, since: live.me.since }); }
+  function dirMaybeClose() {
+    if (live.on || !livePanel.hidden || !dir.tr) return;
+    dir.tr.close(); dir.tr = null; dir.ready = false; dir.users = [];
+  }
+  function onDir(users) { dir.users = users; dir.ready = true; renderDir(); renderLive(); }
+  const byJoin = (a, b) => a.since - b.since || (a.id < b.id ? -1 : 1);
+  function roomsNow() {
+    const users = [...dir.users];
+    if (live.on && !users.some(u => u.id === live.me.id)) users.push({ id: live.me.id, name: live.me.name, room: live.room, since: live.me.since });
+    const map = new Map();
+    for (const u of users) { if (!map.has(u.room)) map.set(u.room, []); map.get(u.room).push(u); }
+    return { users, rooms: [...map].map(([room, us]) => ({ room, us: us.sort(byJoin) })) };
+  }
+  const canvasOf = us => (us[0].id === live.me.id ? 'Your canvas' : `${us[0].name}’s canvas`);
+  function renderDir() {
+    const list = $('#liveRooms'), count = $('#liveDirCount');
+    if (live.avail === null) { list.innerHTML = ''; count.textContent = ''; $('.lp-dir').hidden = true; return; }
+    $('.lp-dir').hidden = false;
+    const { users, rooms } = roomsNow();
+    if (!dir.ready && !users.length) { list.innerHTML = '<li class="lp-empty">Looking for people…</li>'; count.textContent = ''; return; }
+    count.textContent = users.length ? `${users.length} ${users.length === 1 ? 'person' : 'people'}` : '';
+    if (!rooms.length) { list.innerHTML = '<li class="lp-empty">No one’s live right now. Go live and be the first.</li>'; return; }
+    rooms.sort((a, b) => (b.room === live.room) - (a.room === live.room) || b.us.length - a.us.length || a.us[0].since - b.us[0].since);
+    list.innerHTML = rooms.map(({ room, us }) => {
+      const here = live.on && room === live.room, full = us.length >= LIVE_MAX;
+      const names = us.slice(0, 3).map(u => (u.id === live.me.id ? 'You' : u.name)).join(', ') + (us.length > 3 ? ` +${us.length - 3}` : '');
+      const faces = us.slice(0, 3).map((u, i) => `<span class="face" style="--c:${LIVE_COLORS[i]}" aria-hidden="true">${esc(initials(u.name))}</span>`).join('');
+      const action = here ? '<span class="lp-tag">You’re here</span>'
+        : full ? '<span class="lp-tag">Full</span>'
+        : `<button type="button" class="btn btn-secondary lp-join" data-join="${room}" aria-label="Join ${esc(canvasOf(us))}">Join</button>`;
+      return `<li class="lp-room${here ? ' here' : ''}"><span class="lp-faces">${faces}</span><span class="lp-room-txt"><span class="lp-room-name"><b>${esc(canvasOf(us))}</b><span class="lp-n" title="${us.length} of ${LIVE_MAX} people">${us.length}/${LIVE_MAX}</span></span><span>${esc(names)}</span></span>${action}</li>`;
+    }).join('');
+  }
+
+  // ---------- usernames ----------
+  function nameError(name) {
+    if (name.length < 2) return 'Use at least 2 characters.';
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} ._'-]*$/u.test(name)) return 'Use letters, numbers, spaces, dots, dashes or underscores.';
+    const lower = name.toLocaleLowerCase();
+    if (dir.users.some(u => u.id !== live.me.id && u.name.toLocaleLowerCase() === lower)) return `“${name}” is already live. Pick another username.`;
+    return null;
+  }
+  function showNameErr(which, msg) {
+    const el = $(which === 'on' ? '#liveNameErrOn' : '#liveNameErrOff'), inp = $(which === 'on' ? '#liveNameOn' : '#liveNameOff');
+    el.textContent = msg || ''; el.hidden = !msg; inp.setAttribute('aria-invalid', String(!!msg));
+  }
+  function setMyName(name) {
+    live.me.name = name; lsSet('scrib:name', name);
+    $('#liveNameOff').value = name; $('#liveNameOn').value = name;
+    const me = live.peers.find(p => p.id === live.me.id); if (me) me.name = name;
+  }
+
+  // ---------- UI ----------
+  const initials = n => n.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('') || '?';
+  function renderLive() {
+    const on = live.on;
+    liveBtn.dataset.state = on ? live.status : 'off';
+    liveBtn.querySelector('.lbl').textContent = on ? (live.status === 'live' ? 'Live' : live.status === 'reconnecting' ? 'Reconnecting' : 'Connecting') : live.pendingRoom ? 'Join' : 'Live';
+    liveBtn.setAttribute('aria-label', on ? `Live session, ${live.peers.length} of ${LIVE_MAX} people` : live.pendingRoom ? 'Join this live canvas' : 'Go live');
+    const maxFaces = innerWidth < 760 ? 2 : 4;
+    const shown = on ? live.peers.slice(0, maxFaces) : [];
+    liveFaces.innerHTML = shown.map(p => `<span class="face" style="--c:${p.color}" title="${esc(p.name)}${p.id === live.me.id ? ' (you)' : ''}">${esc(initials(p.name))}</span>`).join('')
+      + (on && live.peers.length > maxFaces ? `<span class="face more">+${live.peers.length - maxFaces}</span>` : '');
+    liveFaces.hidden = !on;
+    livePanel.querySelector('.lp-off').hidden = on;
+    livePanel.querySelector('.lp-on').hidden = !on;
+    $('#liveLeave').hidden = !on;
+    $('#liveStart').disabled = live.avail === null;
+    $('#liveUnavailable').hidden = live.avail !== null;
+    if (!on) {
+      const pr = live.pendingRoom;
+      const us = pr ? roomsNow().rooms.find(r => r.room === pr) : null;
+      $('#liveTitle').textContent = pr ? (us ? `Join ${canvasOf(us.us)}` : 'Join this canvas') : 'Go live';
+      $('#liveIntro').textContent = pr ? 'Pick a username to join. You’ll see each other’s cursors and drawing as it happens.' : 'Pick a username. Everyone live on Scrib sees you, and anyone can join your canvas to draw with you.';
+      $('#liveStart').textContent = pr ? 'Join live session' : 'Go live';
+      $('#liveOwn').hidden = !pr;
+    } else {
+      const st = $('#liveStatus');
+      st.dataset.state = live.status;
+      st.textContent = live.status === 'live' ? (live.synced ? `Connected · ${live.peers.length} of ${LIVE_MAX}` : 'Loading the canvas…') : live.status === 'reconnecting' ? 'Reconnecting…' : 'Connecting…';
+      const link = $('#liveLink'); if (link.value !== roomUrl()) link.value = roomUrl();
+      $('#livePeople').innerHTML = live.peers.map(p => `<li><span class="face" style="--c:${p.color}" aria-hidden="true">${esc(initials(p.name))}</span><span class="nm">${esc(p.name)}</span>${p.id === live.me.id ? '<span class="you">You</span>' : ''}</li>`).join('');
+    }
+    renderDir();
+  }
+  function setLivePanel(open) {
+    livePanel.hidden = !open;
+    liveBtn.setAttribute('aria-expanded', String(open));
+    if (open) {
+      liveAvailable().then(() => { renderLive(); dirEnsure(); });
+      renderLive();
+      if (!live.on) { const i = $('#liveNameOff'); i.focus({ preventScroll: true }); i.select(); }
+    } else dirMaybeClose();
+  }
+  liveBtn.addEventListener('click', () => setLivePanel(livePanel.hidden));
+  livePanel.addEventListener('pointerdown', e => e.stopPropagation());
+  document.addEventListener('pointerdown', e => { if (!livePanel.hidden && !e.target.closest('#livePanel, #liveBtn, #liveFaces')) setLivePanel(false); });
+  livePanel.addEventListener('keydown', e => { if (e.key === 'Escape') { setLivePanel(false); liveBtn.focus(); } });
+  liveFaces.addEventListener('click', () => setLivePanel(true));
+  $('#liveNameOff').value = live.me.name; $('#liveNameOn').value = live.me.name;
+  $('#liveNameOff').addEventListener('input', () => showNameErr('off', null));
+  $('#liveNameOn').addEventListener('change', () => { // rename while live
+    const inp = $('#liveNameOn'), name = cleanName(inp.value);
+    if (name === live.me.name) { inp.value = name; showNameErr('on', null); return; }
+    const err = nameError(name);
+    showNameErr('on', err);
+    if (err) return;
+    setMyName(name);
+    if (live.tr) live.tr.rename(name);
+    dirTrack(); renderLive();
+  });
+  async function copyLink() {
+    try { await navigator.clipboard.writeText(roomUrl()); toast('Link copied. Anyone with it can draw with you.'); }
+    catch { const l = $('#liveLink'); l.focus(); l.select(); toast('Press Ctrl C to copy the link.'); }
+  }
+  /** Go live in a room (yours or someone else's) under the username in the form. */
+  let joining = false;
+  async function goLive(room, host) {
+    if (joining) return false;
+    const inp = live.on ? $('#liveNameOn') : $('#liveNameOff');
+    const name = cleanName(inp.value);
+    const err = nameError(name);
+    showNameErr(live.on ? 'on' : 'off', err);
+    if (err) { inp.focus(); return false; }
+    if (live.on && room === live.room) return true;
+    joining = true;
+    const b = $('#liveStart'); b.setAttribute('aria-busy', 'true');
+    try {
+      setMyName(name);
+      if (live.on) liveStop(); // hop from one canvas to another
+      const ok = await liveStart(room, host);
+      if (ok) { live.pendingRoom = null; renderLive(); }
+      return ok;
+    } finally { b.removeAttribute('aria-busy'); joining = false; }
+  }
+  $('#liveForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const host = !live.pendingRoom;
+    const ok = await goLive(live.pendingRoom || randId(8), host);
+    if (ok && host) copyLink();
+    else if (ok) toast('You’re live. Say hi with your cursor.');
+  });
+  $('#liveOwn').addEventListener('click', () => { // came from a link but want your own canvas
+    live.pendingRoom = null;
+    window.history.replaceState(null, '', location.pathname);
+    SAVE_KEY = SOLO_KEY; strokes = []; objects = []; history.length = 0; future.length = 0;
+    load(); clearSel(); closePop(); update(); applyView(); renderLive();
+  });
+  $('#liveRooms').addEventListener('click', async e => {
+    const b = e.target.closest('[data-join]'); if (!b) return;
+    const room = b.dataset.join; if (!ROOM_RE.test(room)) return;
+    const ok = await goLive(room, false);
+    if (ok) toast('You joined. Say hi with your cursor.');
+  });
+  $('#liveCopy').addEventListener('click', copyLink);
+  $('#liveLeave').addEventListener('click', () => { liveStop(); setLivePanel(false); toast('You left live mode.'); });
+  stage.addEventListener('pointerleave', () => liveHooks.cursor(null));
+  window.__scribLive = { dir: () => roomsNow().rooms.map(r => ({ room: r.room, people: r.us.map(u => u.name) })), state: () => ({ on: live.on, status: live.status, synced: live.synced, room: live.room, peers: live.peers.map(p => p.name), cursors: live.cursors.size }), doc: () => ({ s: strokes.map(x => [x.id, x.pts.length]), o: objects.map(o => [o.id, o.kind, Math.round(o.x), Math.round(o.y)]) }) };
+
+
+  // =========================================================================
+  // Theme: light, dark, or follow the system. The choice is applied before
+  // first paint by an inline script in index.html; this keeps it in sync.
+  // =========================================================================
+  const THEME_KEY = 'scrib:theme';
+  const darkMQ = matchMedia('(prefers-color-scheme: dark)');
+  const themePref = () => { try { return localStorage.getItem(THEME_KEY) || 'system'; } catch { return 'system'; } };
+  const resolveTheme = pref => (pref === 'system' ? (darkMQ.matches ? 'dark' : 'light') : pref);
+  const savePref = pref => { try { if (pref === 'system') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, pref); } catch { /* storage blocked */ } };
+  function paintTheme(pref) {
+    const t = resolveTheme(pref);
+    document.documentElement.setAttribute('data-theme', t);
+    stage.setAttribute('data-theme', t); // the rain's scene: the engine reads and flips this one
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.setAttribute('content', t === 'dark' ? '#171511' : '#fbf3d8'));
+    document.querySelectorAll('[data-theme-opt]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.themeOpt === pref)));
+    const btn = $('#themeBtn'), next = t === 'dark' ? 'light' : 'dark';
+    btn.setAttribute('aria-label', `Switch to ${next} theme`); btn.title = `Switch to ${next} theme (Shift D)`;
+  }
+  /* Rain (PinUI's Theme Switch engine, theme-rain.js): the next theme falls as rain,
+     puddles spread and merge under the drawings, every panel flips the moment the
+     rain reaches it, and the page commits once the canvas is covered. The engine
+     owns the button's click; reduced motion switches at once. */
+  let pendingPref = null;
+  const rain = window.ScribThemeSwitch ? window.ScribThemeSwitch.createThemeSwitch({
+    root: stage, button: $('#themeBtn'), fx: $('#themeFx'),
+    effect: () => 'rain', sound: () => false,
+    onCommit: next => { const pref = pendingPref || next; pendingPref = null; savePref(pref); paintTheme(pref); },
+  }) : null;
+  function setTheme(pref) {
+    if (resolveTheme(pref) === document.documentElement.getAttribute('data-theme') || !rain) { savePref(pref); paintTheme(pref); return; }
+    if (rain.busy()) return;
+    pendingPref = pref;
+    rain.toggle();
+  }
+  const toggleTheme = () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  if (!rain) $('#themeBtn').addEventListener('click', toggleTheme);
+  document.querySelectorAll('[data-theme-opt]').forEach(b => b.addEventListener('click', () => setTheme(b.dataset.themeOpt)));
+  document.querySelector('.seg').addEventListener('keydown', e => { // radio group: arrows move the choice
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    e.preventDefault(); e.stopPropagation();
+    const opts = [...document.querySelectorAll('[data-theme-opt]')];
+    const i = opts.findIndex(b => b.getAttribute('aria-checked') === 'true');
+    const n = opts[(i + (e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1) + opts.length) % opts.length];
+    setTheme(n.dataset.themeOpt); n.focus();
+  });
+  darkMQ.addEventListener('change', () => { if (themePref() === 'system' && !(rain && rain.busy())) paintTheme('system'); });
+  paintTheme(themePref());
+
+  // =========================================================================
+  // GitHub: live star count (cached for an hour) and the "give it a star" doodle
+  // =========================================================================
+  const REPO = 'Rachit315/Scrib';
+  const fmtStars = n => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(n));
+  function showStars(n) { // n: a number, or shields.io's ready-made label like "1.2k"
+    const label = typeof n === 'number' ? fmtStars(n) : n;
+    $('#ghCount').textContent = label;
+    $('#ghStars').hidden = false;
+    $('#githubLink').setAttribute('aria-label', `Star Scrib on GitHub, ${label} star${label === '1' ? '' : 's'} (opens in a new tab)`);
+  }
+  // shields.io first: it caches GitHub's count and isn't rate limited per visitor (GitHub's API allows 60 calls an hour per IP).
+  async function fetchStars() {
+    try {
+      const r = await fetch(`https://img.shields.io/github/stars/${REPO}.json`);
+      if (r.ok) { const j = await r.json(); if (/^\d+(\.\d+)?k?$/i.test(j.message || '')) return j.message; }
+    } catch { /* try GitHub */ }
+    try {
+      const r = await fetch(`https://api.github.com/repos/${REPO}`, { headers: { Accept: 'application/vnd.github+json' } });
+      if (r.ok) { const n = (await r.json()).stargazers_count; if (typeof n === 'number') return n; }
+    } catch { /* offline */ }
+    return null;
+  }
+  (async () => {
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem('scrib:gh') || 'null'); } catch { /* ignore */ }
+    if (cached && cached.n != null) showStars(cached.n);
+    if (cached && Date.now() - cached.t < 36e5) return;
+    const n = await fetchStars();
+    if (n == null) return; // keep the plain GitHub button
+    showStars(n);
+    try { localStorage.setItem('scrib:gh', JSON.stringify({ n, t: Date.now() })); } catch { /* ignore */ }
+  })();
+  const doodle = $('#ghDoodle');
+  try { if (localStorage.getItem('scrib:doodle') === 'done') doodle.remove(); } catch { /* ignore */ }
+  $('#githubLink').addEventListener('click', () => {
+    if (doodle.isConnected) doodle.classList.add('gone');
+    try { localStorage.setItem('scrib:doodle', 'done'); } catch { /* ignore */ }
+    try { localStorage.removeItem('scrib:gh'); } catch { /* ignore */ } // refresh the count next time
+  });
+
+  window.addEventListener('resize', () => { applyView(); renderLive(); if (!presentEl.hidden) renderPresent(); });
   const restored = load();
   setTool('pen');
   renderPalette();
   applyView();
   update();
-  if (restored) toast('Restored your last canvas. Clear it from the sidebar to start fresh.');
+  renderLive();
+  if (ROOM_PARAM) { live.pendingRoom = ROOM_PARAM; setLivePanel(true); } // pick a username, then join
+  else {
+    liveAvailable().then(renderLive);
+    if (restored) toast('Restored your last canvas. Clear it from the sidebar to start fresh.');
+  }
 })();

@@ -1,0 +1,16 @@
+{
+  "name": "Scrib: sketch a screen, get real UI components",
+  "short_name": "Scrib",
+  "description": "Draw your UI by hand and swap each shape for a real component. Draw live with up to 10 people.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbf3d8",
+  "theme_color": "#fbf3d8",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}

@@ -1,8 +1,8 @@
 {
-  "name": "sketch-to-ui",
+  "name": "scrib",
   "version": "1.0.0",
   "private": true,
-  "description": "Draw a UI sketch and get it rebuilt with iOS 27, Material 3 and Simple Design System components.",
+  "description": "Scrib: draw a UI sketch and get real components from seven UI kits. Live sessions for up to 10 people.",
   "scripts": {
     "start": "node server.js"
   }
