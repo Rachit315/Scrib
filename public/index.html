@@ -59,19 +59,33 @@
   <!-- Handwriting for the GitHub doodle only: a tiny subset of the letters it uses -->
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&text=Give%20it%20a%20star&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet"></noscript>
-  <link rel="stylesheet" href="/app.css?v=30">
-  <link rel="stylesheet" href="/kits.css?v=30">
-  <script src="/theme-rain.js?v=30" defer></script>
-  <script src="/live-config.js?v=30" defer></script>
-  <script src="/app.js?v=30" defer></script>
+  <link rel="stylesheet" href="/app.css?v=31">
+  <link rel="stylesheet" href="/kits.css?v=31">
+  <script src="/theme-rain.js?v=31" defer></script>
+  <script src="/live-config.js?v=31" defer></script>
+  <script src="/app.js?v=31" defer></script>
+  <!-- Vercel Web Analytics (static-site setup). It only loads on the deployed site: the
+       /_vercel/insights endpoint doesn't exist on localhost. -->
+  <script>
+    window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+      var va = document.createElement('script'); va.defer = true; va.src = '/_vercel/insights/script.js'; document.head.appendChild(va);
+    }
+  </script>
 </head>
 <body>
   <header class="topbar">
+    <div class="topbar-start">
     <div class="brand" id="brand" data-pts-target>
       <h1 class="brand-name"><img class="brand-mark" src="/logo.svg" width="24" height="24" alt="">Scrib</h1>
       <button id="sideToggle" class="icon-btn" type="button" aria-label="Open layers and libraries" aria-expanded="false" aria-controls="sidebar" title="Layers and libraries (Ctrl \)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
       </button>
+    </div>
+    <!-- Unique visitors, counted in Scrib's Supabase project -->
+    <div class="visitors" id="visitors" data-pts-target hidden role="status" aria-live="polite">
+      <span class="vdot" aria-hidden="true"></span><span class="vnum" id="visitorCount">0</span><span class="vlbl">visitors</span>
+    </div>
     </div>
     <div class="topbar-end">
       <div class="live" id="live" data-pts-target>

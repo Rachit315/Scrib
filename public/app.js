@@ -3237,6 +3237,52 @@ ${pretty(markup(roots), 3, true)}    </>
     showStars(n);
     try { localStorage.setItem('scrib:gh', JSON.stringify({ n, t: Date.now() })); } catch { /* ignore */ }
   })();
+  // =========================================================================
+  // Visitors: unique visitors to the site, kept in Scrib's Supabase project.
+  // Each browser gets a random id once (no personal data); the database counts
+  // each id a single time. Local development only reads the count, so testing
+  // doesn't inflate it.
+  // =========================================================================
+  (async () => {
+    const cfg = window.SCRIB_LIVE || {};
+    if (!cfg.supabaseUrl || !cfg.supabaseKey) return; // no backend on this host: no pill
+    const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    let id = null;
+    try {
+      id = localStorage.getItem('scrib:vid');
+      if (!id) {
+        // randomUUID is HTTPS-only; build a v4 UUID by hand anywhere else
+        id = crypto.randomUUID ? crypto.randomUUID() : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+        localStorage.setItem('scrib:vid', id);
+      }
+    } catch { id = null; } // storage blocked: read the count, don't add to it
+    const register = !isLocal && id;
+    let total = null;
+    try {
+      const r = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/${register ? 'register_visit' : 'visitor_count'}`, {
+        method: 'POST',
+        headers: { apikey: cfg.supabaseKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify(register ? { visitor: id } : {}),
+      });
+      if (r.ok) total = Number(await r.json());
+    } catch { /* offline */ }
+    if (!Number.isFinite(total) || total < 0) return;
+    const el = $('#visitors'), num = $('#visitorCount');
+    const fmt = n => n.toLocaleString('en-US');
+    el.setAttribute('aria-label', `${fmt(total)} visitors`);
+    el.hidden = false;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce || total < 2) { num.textContent = fmt(total); return; }
+    // Count up once, quickly, from a little below the total
+    const from = Math.max(0, Math.floor(total * 0.82)), t0 = performance.now(), ms = 900;
+    const step = now => {
+      const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 4);
+      num.textContent = fmt(Math.round(from + (total - from) * e));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  })();
+
   const doodle = $('#ghDoodle');
   try { if (localStorage.getItem('scrib:doodle') === 'done') doodle.remove(); } catch { /* ignore */ }
   $('#githubLink').addEventListener('click', () => {
