@@ -1393,6 +1393,7 @@
     if (liveHooks.cursor && lastPointer) liveHooks.cursor(lastPointer);
     document.querySelectorAll('.tool[data-tool]').forEach(b => { const on = b.dataset.tool === t; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
     if (t !== 'select' && t !== 'proto' && hoverO) { hoverO = null; renderOverlay(); }
+    if (typeof updateGuide === 'function') updateGuide();
   }
   document.querySelectorAll('.tool[data-tool]').forEach(b => b.addEventListener('click', () => {
     if (b.dataset.tool === 'pen' && tool === 'pen') return togglePalette();
@@ -1593,14 +1594,78 @@
   // =========================================================================
   // Sidebar (left): layers & libraries
   // =========================================================================
+  // =========================================================================
+  // Morph: a small control (pill, tab) grows into its panel and shrinks back.
+  // The panel is laid out at its final size and revealed with a clip that starts
+  // as the control's exact shape, so nothing is stretched; the contents rise in
+  // just behind it. Springs come from Motion (motion.dev); without it, or with
+  // reduced motion, panels simply appear.
+  // =========================================================================
+  const morphing = new Set();
+  const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const motionLib = () => (window.Motion && typeof window.Motion.animate === 'function' ? window.Motion : null);
+  function clipFor(r, to, radius) {
+    const t = Math.max(0, r.top - to.top), rt = Math.max(0, to.right - r.right), b = Math.max(0, to.bottom - r.bottom), l = Math.max(0, r.left - to.left);
+    return `inset(${t}px ${rt}px ${b}px ${l}px round ${radius}px)`;
+  }
+  const radiusOf = el => parseFloat(getComputedStyle(el).borderTopLeftRadius) || 12;
+  const PAD = 48; // clip past the panel's edges at rest, so its shadow isn't cut off
+  async function morphOpen(panel, from, { hideFrom = true } = {}) {
+    const M = motionLib();
+    const r0 = from.getBoundingClientRect(), r0Radius = radiusOf(from);
+    panel.hidden = false;
+    if (hideFrom) from.style.visibility = 'hidden';
+    if (!M || reduceMotion() || !r0.width) {
+      if (hideFrom) { from.hidden = true; from.style.visibility = ''; }
+      if (reduceMotion()) panel.animate({ opacity: [0, 1] }, { duration: 140, easing: 'ease' });
+      return;
+    }
+    morphing.add(panel);
+    const to = panel.getBoundingClientRect(), radius = radiusOf(panel);
+    const kids = [...panel.children];
+    kids.forEach(k => { k.style.opacity = '0'; });
+    const shape = M.animate(panel, { clipPath: [clipFor(r0, to, r0Radius), `inset(-${PAD}px round ${radius + PAD}px)`] }, { type: 'spring', bounce: 0.14, duration: 0.5 });
+    const rise = M.animate(kids, { opacity: [0, 1], transform: ['translateY(6px)', 'translateY(0px)'], filter: ['blur(3px)', 'blur(0px)'] }, { duration: 0.32, delay: M.stagger ? M.stagger(0.035, { startDelay: 0.08 }) : 0.08, ease: [0.23, 1, 0.32, 1] });
+    await Promise.all([shape.finished, rise.finished].map(p => p.catch(() => {})));
+    panel.style.clipPath = ''; kids.forEach(k => { k.style.opacity = ''; k.style.transform = ''; k.style.filter = ''; });
+    if (hideFrom) { from.hidden = true; from.style.visibility = ''; }
+    morphing.delete(panel);
+  }
+  async function morphClose(panel, into, { showInto = true } = {}) {
+    const M = motionLib();
+    if (showInto) { into.hidden = false; into.style.visibility = 'hidden'; }
+    const r1 = into.getBoundingClientRect(), r1Radius = radiusOf(into);
+    if (!M || reduceMotion() || !r1.width || panel.hidden) {
+      panel.hidden = true;
+      if (showInto) into.style.visibility = '';
+      return;
+    }
+    morphing.add(panel);
+    const to = panel.getBoundingClientRect(), radius = radiusOf(panel), kids = [...panel.children];
+    M.animate(kids, { opacity: [1, 0] }, { duration: 0.12, ease: 'easeOut' });
+    const shape = M.animate(panel, { clipPath: [`inset(-${PAD}px round ${radius + PAD}px)`, clipFor(r1, to, r1Radius)] }, { type: 'spring', bounce: 0, duration: 0.36 });
+    await shape.finished.catch(() => {});
+    panel.hidden = true; panel.style.clipPath = ''; kids.forEach(k => { k.style.opacity = ''; });
+    if (showInto) into.style.visibility = '';
+    morphing.delete(panel);
+  }
+
   const sidebar = $('#sidebar'), sideToggle = $('#sideToggle');
   const collapsed = new Set(); // frames folded in the Layers panel
   /** The brand pill and the panel are one thing: opening swaps the pill for the panel's own header. */
-  function setSidebar(open, focus = true) {
-    sidebar.hidden = !open;
-    document.body.classList.toggle('side-open', open);
+  async function setSidebar(open, focus = true) {
+    if (open === !sidebar.hidden || morphing.has(sidebar)) return;
+    const brand = $('#brand');
     sideToggle.setAttribute('aria-expanded', String(open));
-    renderSidebar();
+    if (open) {
+      sidebar.hidden = false; renderSidebar(); // lay out the panel's contents before it morphs in
+      const go = morphOpen(sidebar, brand, { hideFrom: false });
+      document.body.classList.add('side-open');
+      await go;
+    } else {
+      document.body.classList.remove('side-open');
+      await morphClose(sidebar, brand, { showInto: false });
+    }
     if (focus) (open ? $('#sideClose') : sideToggle).focus({ preventScroll: true });
   }
   sideToggle.onclick = () => setSidebar(sidebar.hidden);
@@ -2518,6 +2583,7 @@ ${pretty(markup(roots), 3, true)}    </>
     renderInk(); renderObjects(); renderOverlay(); renderBadges(); renderInspector(); renderSidebar(); positionSelbar();
     if (pop) renderPop();
     $('#empty').classList.toggle('hidden', strokes.length + objects.length > 0);
+    if (typeof updateGuide === 'function') updateGuide();
     $('#undo').disabled = !history.length; $('#redo').disabled = !future.length;
     save();
   }
@@ -3282,6 +3348,142 @@ ${pretty(markup(roots), 3, true)}    </>
     };
     requestAnimationFrame(step);
   })();
+
+
+  // =========================================================================
+  // Shape guide: every shape the recogniser understands (see suggest()), drawn
+  // as a little sketch. One list feeds the empty-state legend and the guide that
+  // sits on the right while you draw.
+  // =========================================================================
+  const ACC = 'currentColor';
+  const sq = 'M7 9.2c1-1.6 1.9 1.6 2.9 0s1.9 1.6 2.9 0 1.9 1.6 2.9 0'; // a scribble of "writing"
+  const SHAPES = [
+    { name: 'Tall outline', to: 'Device frame', svg: `<rect x="7.5" y="1.5" width="9" height="15" rx="2.4"/>` },
+    { name: 'Box with writing', to: 'Button', svg: `<rect x="1.5" y="5" width="21" height="8" rx="4"/><path d="${sq}"/>` },
+    { name: 'Thin empty box', to: 'Text field', svg: `<rect x="1.5" y="6" width="21" height="6" rx="1.4"/>` },
+    { name: 'Short box, writing', to: 'Chip', svg: `<rect x="5.5" y="5" width="13" height="8" rx="4"/><path d="M8.5 9.2c.8-1.4 1.6 1.4 2.4 0s1.6 1.4 2.4 0 1.6 1.4 2.4 0"/>` },
+    { name: 'Pill with a dot', to: 'Switch', svg: `<rect x="4" y="5" width="16" height="8" rx="4"/><circle cx="15.8" cy="9" r="2.2" fill="${ACC}"/>` },
+    { name: 'Small square', to: 'Checkbox', svg: `<rect x="8" y="5" width="8" height="8" rx="1.6"/>` },
+    { name: 'Circle', to: 'Avatar', svg: `<circle cx="12" cy="9" r="6.2"/>` },
+    { name: 'Box with an X', to: 'Image', svg: `<rect x="3" y="2" width="18" height="14" rx="1.6"/><path d="M3.8 2.8l16.4 12.4M20.2 2.8L3.8 15.2"/>` },
+    { name: 'Big empty box', to: 'Media', svg: `<rect x="1.5" y="2" width="21" height="14" rx="2"/>` },
+    { name: 'Box with lines', to: 'List', svg: `<rect x="2.5" y="1.5" width="19" height="15" rx="2"/><path d="M5.5 6h13M5.5 9.5h13M5.5 13h9"/>` },
+    { name: 'Dot, then a line', to: 'List row', svg: `<rect x="1.5" y="5" width="21" height="8" rx="2"/><circle cx="5.5" cy="9" r="1.7" fill="${ACC}"/><path d="M9 9h10"/>` },
+    { name: 'Box with shapes in it', to: 'Card', svg: `<rect x="2.5" y="1.5" width="19" height="15" rx="2"/><rect x="5" y="4" width="14" height="6" rx="1"/><path d="M5 13h8"/>` },
+    { name: 'Bar at a device’s top', to: 'Nav bar', svg: `<rect x="7.5" y="1.5" width="9" height="15" rx="2.4"/><path d="M8.4 4.6h7.2" stroke-width="2.4"/>` },
+    { name: 'Bar at a device’s bottom', to: 'Tab bar', svg: `<rect x="7.5" y="1.5" width="9" height="15" rx="2.4"/><path d="M8.4 13.4h7.2" stroke-width="2.4"/>` },
+    { name: 'Big scribble', to: 'Title', svg: `<path d="M2.5 9.5c1.6-3.4 3.1 3.4 4.7 0s3.1 3.4 4.7 0 3.1 3.4 4.7 0 2.4 2.6 4.2 0" stroke-width="2.1"/>` },
+    { name: 'Small scribble', to: 'Body text', svg: `<path d="M3 6.5c1.1-1.8 2.2 1.8 3.3 0s2.2 1.8 3.3 0 2.2 1.8 3.3 0 2.2 1.8 3.3 0M3 12c1.1-1.8 2.2 1.8 3.3 0s2.2 1.8 3.3 0 2.2 1.8 3.3 0"/>` },
+  ];
+  const shapeIcon = s => `<svg class="sg-ic" width="26" height="20" viewBox="0 0 24 18" fill="none" stroke="${ACC}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${s.svg}</svg>`;
+  $('#legend').innerHTML = SHAPES.map(s => `<li>${shapeIcon(s)}<span class="nm">${s.name}</span><span class="to">${s.to}</span></li>`).join('');
+  // ---- Reviews: replies to the launch post on X, drifting left under the legend.
+  // Hovering (or focusing a card) eases the row to a stop so you can read and click;
+  // each card opens that person's profile.
+  (() => {
+    const REVIEWS = [
+      { n: 'Hardik', h: 'coleHardik', v: 1, t: 'This is hugeeee 🥳' },
+      { n: 'Terry Carson', h: 'mrterrycarson', v: 1, t: 'Wow, this looks really useful! I love the idea of just drawing a box and getting a real component. Very neat.' },
+      { n: 'aadi', h: 'AadiChowdhury7', v: 1, t: 'This is sooo cool!' },
+      { n: 'Aniket Pawar', h: 'alaymanguy', v: 1, t: 'super cool, everyone at @shadcnlabs is cracked af 🔥' },
+      { n: 'Ved Savla', h: 'veddsavla8', v: 0, t: 'crazy stuff' },
+      { n: 'Karan', h: 'itsmeekaran', v: 1, t: 'bro is cooking HARD. this is actually insane 🔥' },
+      { n: 'Vivaan', h: 'Its_Vivaann', v: 0, t: 'Pretty Cool' },
+      { n: 'Jay', h: 'radiumcoders', v: 1, t: 'whoaa it is cooooooooool' },
+      { n: 'Aditya', h: 'AdiKodez', v: 1, t: 'cool stuff alert' },
+      { n: 'AETHER', h: 'aether_uiux', v: 1, t: "that's amazing" },
+      { n: 'Swami', h: 'SwamiMalode', v: 1, t: 'Oh niceee' },
+    ];
+    const box = $('#reviews'), track = $('#rvTrack');
+    if (!box || !track) return;
+    const BADGE = '<svg width="14" height="14" viewBox="0 0 24 24" aria-label="Verified" role="img"><path fill="#1d9bf0" d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91C2.63 9.33 1.75 10.57 1.75 12s.88 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34z"/><path fill="#fff" d="m10.54 16.2-3.6-3.6 1.42-1.42 2.18 2.19 4.83-4.83 1.42 1.41z"/></svg>';
+    const XLOGO = '<svg class="rv-x" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.24 2.25h3.31l-7.23 8.26 8.5 11.24h-6.66l-5.21-6.82-5.97 6.82H1.68l7.73-8.84L1.25 2.25h6.83l4.71 6.23zm-1.16 17.52h1.83L7.08 4.13H5.12z"/></svg>';
+    const body = t => esc(t).replace(/@(\w+)/g, '<span class="at">@$1</span>');
+    const card = (r, copy) => `<li><a class="rv" href="https://x.com/${r.h}" target="_blank" rel="noopener noreferrer"${copy ? ' tabindex="-1"' : ''}>
+      <span class="rv-av" aria-hidden="true">${esc([...r.n][0])}<img src="https://unavatar.io/x/${r.h}?fallback=false" alt="" width="32" height="32" loading="lazy" decoding="async" referrerpolicy="no-referrer"></span>
+      <span class="rv-who"><span class="rv-name"><span>${esc(r.n)}</span>${r.v ? BADGE : ''}</span><span class="rv-handle">@${r.h}</span></span>
+      ${XLOGO}<span class="rv-text">${body(r.t)}</span></a></li>`;
+    const group = copy => `<ul class="rv-group"${copy ? ' aria-hidden="true"' : ' aria-label="Replies on X"'}>${REVIEWS.map(r => card(r, copy)).join('')}</ul>`;
+    // Two copies of the row: when the first has fully passed, the second sits exactly where it began.
+    track.innerHTML = group(false) + group(true);
+    // No avatar (blocked, renamed, rate-limited)? The initial underneath shows instead.
+    track.querySelectorAll('.rv-av img').forEach(img => {
+      const drop = () => img.remove();
+      img.addEventListener('error', drop);
+      if (img.complete && !img.naturalWidth) drop();
+    });
+
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { box.classList.add('rv-static'); return; }
+
+    const SPEED = 30; // px per second: slow enough to read while it moves
+    const first = track.firstElementChild;
+    let period = first.offsetWidth, x = 0, v = SPEED, target = SPEED, last = 0, raf = 0, seen = true, hovered = false, focused = false;
+    new ResizeObserver(() => { period = first.offsetWidth; }).observe(first);
+    const aim = () => { target = hovered || focused ? 0 : SPEED; };
+    const tick = t => {
+      const dt = last ? Math.min(0.05, (t - last) / 1000) : 0;
+      last = t;
+      v += (target - v) * (1 - Math.exp(-dt * 7)); // eases to a stop on hover, back up on leave
+      if (period) x = (x + v * dt) % period;
+      track.style.transform = `translate3d(${-x}px,0,0)`;
+      raf = requestAnimationFrame(tick);
+    };
+    const run = () => {
+      const go = seen && !document.hidden;
+      if (go && !raf) { last = 0; raf = requestAnimationFrame(tick); }
+      else if (!go && raf) { cancelAnimationFrame(raf); raf = 0; }
+    };
+    // Only move while it's on screen: not behind a sketch, not in a background tab.
+    new IntersectionObserver(([e]) => { seen = e.isIntersecting; run(); }).observe(box);
+    document.addEventListener('visibilitychange', run);
+    box.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') { hovered = true; aim(); } });
+    box.addEventListener('pointerleave', () => { hovered = false; aim(); });
+    box.addEventListener('focusin', () => { focused = true; aim(); });
+    box.addEventListener('focusout', e => { if (!box.contains(e.relatedTarget)) { focused = false; aim(); } });
+    // Keep a focused card in view: tabbing ahead shouldn't land on one that's off screen.
+    // Only the first copy is focusable, so centre that card: its left edge in the track, minus half the view.
+    const show = a => {
+      box.scrollLeft = 0; // the browser may have scrolled the clipped row itself; the transform does the moving
+      const fade = box.clientWidth * 0.14, l = a.offsetLeft - x;
+      if (l >= fade && l + a.offsetWidth <= box.clientWidth - fade) return;
+      x = Math.min(period - 1, Math.max(0, a.offsetLeft + a.offsetWidth / 2 - box.clientWidth / 2));
+      track.style.transform = `translate3d(${-x}px,0,0)`;
+    };
+    box.addEventListener('focusin', e => {
+      const a = e.target.closest('.rv'); if (!a) return;
+      show(a); requestAnimationFrame(() => show(a));
+    });
+    run();
+  })();
+
+  $('#sgList').innerHTML = SHAPES.map(s => `<li>${shapeIcon(s)}<span class="sg-txt"><span class="nm">${s.name}</span><span class="to">${s.to}</span></span></li>`).join('');
+
+  const guide = $('#shapeGuide'), guideTab = $('#sgTab');
+  // Closed by default: while you draw it's a small "Shape guide" tab; open it when you need it.
+  let guideOpen = false;
+  try { guideOpen = localStorage.getItem('scrib:guide-open') === '1'; } catch { /* ignore */ }
+  const drawingNow = () => tool === 'pen' && strokes.length + objects.length > 0 && presentEl.hidden;
+  function updateGuide() {
+    if (morphing.has(guide)) return; // the morph decides what shows until it lands
+    const d = drawingNow();
+    guide.hidden = !d || !guideOpen;
+    guideTab.hidden = !d || guideOpen;
+    guideTab.setAttribute('aria-expanded', String(d && guideOpen));
+  }
+  async function setGuide(open) {
+    if (open === guideOpen || morphing.has(guide)) return;
+    guideOpen = open;
+    try { localStorage.setItem('scrib:guide-open', open ? '1' : '0'); } catch { /* ignore */ }
+    guideTab.setAttribute('aria-expanded', String(open));
+    if (open) await morphOpen(guide, guideTab);
+    else await morphClose(guide, guideTab);
+    updateGuide();
+    (open ? $('#sgHide') : guideTab).focus({ preventScroll: true });
+  }
+  $('#sgHide').addEventListener('click', () => setGuide(false));
+  guideTab.addEventListener('click', () => setGuide(true));
+  guide.addEventListener('pointerdown', e => e.stopPropagation());
+  guideTab.addEventListener('pointerdown', e => e.stopPropagation());
 
   const doodle = $('#ghDoodle');
   try { if (localStorage.getItem('scrib:doodle') === 'done') doodle.remove(); } catch { /* ignore */ }

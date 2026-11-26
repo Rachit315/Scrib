@@ -66,11 +66,13 @@
   <!-- Handwriting for the GitHub doodle only: a tiny subset of the letters it uses -->
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&text=Give%20it%20a%20star&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet"></noscript>
-  <link rel="stylesheet" href="/app.css?v=31">
-  <link rel="stylesheet" href="/kits.css?v=31">
-  <script src="/theme-rain.js?v=31" defer></script>
-  <script src="/live-config.js?v=31" defer></script>
-  <script src="/app.js?v=31" defer></script>
+  <link rel="stylesheet" href="/app.css?v=37">
+  <link rel="stylesheet" href="/kits.css?v=37">
+  <!-- Motion (motion.dev): springs for the panel morphs -->
+  <script src="https://cdn.jsdelivr.net/npm/motion@12.23.0/dist/motion.js" defer></script>
+  <script src="/theme-rain.js?v=37" defer></script>
+  <script src="/live-config.js?v=37" defer></script>
+  <script src="/app.js?v=37" defer></script>
   <!-- Vercel Web Analytics (static-site setup). It only loads on the deployed site: the
        /_vercel/insights endpoint doesn't exist on localhost. -->
   <script>
@@ -156,13 +158,10 @@
       <h2 id="emptyTitle">Sketch a screen</h2>
       <p>Draw boxes, pills and scribbles. When a shape is ready, press its <b>Find component</b> tag to swap it for a real component from seven UI kits.</p>
       <button type="button" class="btn btn-primary" id="emptyExample">Try the example sketch</button>
-      <ul class="legend" aria-label="What shapes become">
-        <li><span class="glyph g-frame" aria-hidden="true"></span>Tall outline <span class="to">device frame</span></li>
-        <li><span class="glyph g-pill" aria-hidden="true"></span>Box with writing <span class="to">button</span></li>
-        <li><span class="glyph g-field" aria-hidden="true"></span>Thin empty box <span class="to">text field</span></li>
-        <li><span class="glyph g-x" aria-hidden="true"></span>Box with an X <span class="to">image</span></li>
-        <li><span class="glyph g-dot" aria-hidden="true"></span>Circle <span class="to">avatar</span></li>
-      </ul>
+      <ul class="legend" id="legend" aria-label="What shapes become"></ul>
+      <div class="reviews" id="reviews" role="region" aria-label="What people said about Scrib on X">
+        <div class="rv-track" id="rvTrack"></div>
+      </div>
     </section>
   </main>
 
@@ -172,6 +171,22 @@
     <h2 class="pal-title">Thickness</h2>
     <div class="widths" id="widths"></div>
   </div>
+
+  <!-- Shape guide: a tab on the right while you draw; it morphs open into the full guide -->
+  <button type="button" class="sg-tab" id="sgTab" hidden aria-expanded="false" aria-controls="shapeGuide" title="Shape guide">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+    <span>Shape guide</span>
+  </button>
+  <aside id="shapeGuide" class="shape-guide" data-pts-target hidden aria-labelledby="sgTitle">
+    <div class="sg-head">
+      <h2 class="sg-title" id="sgTitle">Shape guide</h2>
+      <button type="button" class="icon-btn sg-hide" id="sgHide" aria-label="Close shape guide" title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+    <ul class="sg-list" id="sgList"></ul>
+    <p class="sg-foot">Pause, then press a shape’s <b>Find component</b> tag.</p>
+  </aside>
 
   <!-- Live session -->
   <section id="livePanel" data-pts-target class="live-panel" hidden role="dialog" aria-labelledby="liveTitle">
