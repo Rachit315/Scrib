@@ -66,13 +66,13 @@
   <!-- Handwriting for the GitHub doodle only: a tiny subset of the letters it uses -->
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&text=Give%20it%20a%20star&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet"></noscript>
-  <link rel="stylesheet" href="/app.css?v=37">
-  <link rel="stylesheet" href="/kits.css?v=37">
+  <link rel="stylesheet" href="/app.css?v=39">
+  <link rel="stylesheet" href="/kits.css?v=39">
   <!-- Motion (motion.dev): springs for the panel morphs -->
   <script src="https://cdn.jsdelivr.net/npm/motion@12.23.0/dist/motion.js" defer></script>
-  <script src="/theme-rain.js?v=37" defer></script>
-  <script src="/live-config.js?v=37" defer></script>
-  <script src="/app.js?v=37" defer></script>
+  <script src="/theme-rain.js?v=39" defer></script>
+  <script src="/live-config.js?v=39" defer></script>
+  <script src="/app.js?v=39" defer></script>
   <!-- Vercel Web Analytics (static-site setup). It only loads on the deployed site: the
        /_vercel/insights endpoint doesn't exist on localhost. -->
   <script>
@@ -151,6 +151,7 @@
     <div id="badges" data-pts-target></div>
     <!-- Rain theme switch: the falling rain draws here, over everything -->
     <div id="themeFx" class="theme-fx" aria-hidden="true"></div>
+    <ul id="sgLibMenu" class="sg-lib-menu" role="listbox" aria-label="Library for dropped components" tabindex="-1" hidden></ul>
     <!-- Other people's cursors in a live session -->
     <div id="cursors" class="cursors" aria-hidden="true"></div>
 
@@ -185,7 +186,14 @@
       </button>
     </div>
     <ul class="sg-list" id="sgList"></ul>
-    <p class="sg-foot">Pause, then press a shape’s <b>Find component</b> tag.</p>
+    <div class="sg-lib">
+      <span class="sg-lib-label" id="sgLibLabel">Library</span>
+      <button type="button" class="sg-lib-btn" id="sgLibBtn" aria-haspopup="listbox" aria-expanded="false" aria-controls="sgLibMenu" aria-labelledby="sgLibLabel sgLibBtn">
+        <span class="sw" aria-hidden="true"></span><span class="nm"></span><span class="tg"></span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg>
+      </button>
+    </div>
+    <p class="sg-foot"><b>Drag</b> one onto the canvas, or sketch it and press <b>Find component</b>.</p>
   </aside>
 
   <!-- Live session -->

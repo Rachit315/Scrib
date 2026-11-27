@@ -1028,12 +1028,83 @@ body.side-open .visitors { opacity: 0; visibility: hidden; }
   display: grid; grid-template-columns: 1fr 1fr; gap: 2px var(--s-1);
   overflow: auto; overscroll-behavior: contain;
 }
-.sg-list li { display: flex; align-items: center; gap: var(--s-2); min-height: 40px; padding: 4px 6px; border-radius: var(--r-md); }
+.sg-list li {
+  display: flex; align-items: center; gap: var(--s-2); min-height: 40px; padding: 4px 6px; border-radius: var(--r-md);
+  cursor: grab; user-select: none; -webkit-user-select: none; touch-action: pan-y; -webkit-touch-callout: none;
+  transition: background-color 120ms ease, opacity 160ms ease, transform 160ms var(--ease-out);
+}
 @media (hover: hover) and (pointer: fine) { .sg-list li:hover { background: var(--surface-2); } }
+.sg-list li:active { transform: scale(0.98); }
+.sg-list li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sg-list li.is-source { opacity: 0.4; transform: none; } /* the row you lifted stays put as a placeholder */
+
+/* The row in your hand, and the outline of what lands */
+.sg-ghost {
+  position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none;
+  display: flex; align-items: center; gap: var(--s-2); min-height: 40px; padding: 4px 6px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg); will-change: transform;
+  animation: sgLift 160ms var(--ease-out);
+}
+.sg-ghost > * { transition: opacity 120ms ease; }
+.sg-ghost.over { opacity: 0.92; }
+.sg-ghost .sg-ic { color: var(--accent); flex: none; }
+@keyframes sgLift { from { scale: 1; box-shadow: none; } to { scale: 1.03; } }
+.sg-ghost { scale: 1.03; }
+.sg-drop {
+  position: fixed; left: 0; top: 0; z-index: 14; pointer-events: none;
+  border: 1.5px dashed var(--accent); border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+.sg-drop.in-frame { border-style: solid; }
+.sg-drop-tag {
+  position: absolute; left: -1.5px; bottom: calc(100% + 6px); white-space: nowrap;
+  padding: 2px 6px; border-radius: var(--r-sm); background: var(--ink); color: var(--on-ink);
+  font-size: 11px; font-weight: 600; line-height: 16px;
+}
+body.sg-dragging, body.sg-dragging * { cursor: grabbing !important; }
+@media (prefers-reduced-motion: reduce) { .sg-ghost { animation: none; } }
 .sg-list .sg-ic { color: var(--accent); flex: none; }
 .sg-txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .sg-txt .to { order: -1; font-size: var(--t-12); font-weight: 600; color: var(--ink); }
 .sg-txt .nm { font-size: 11px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-lib {
+  flex: none; display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-2) var(--s-3) var(--s-2) var(--s-4); border-top: 1px solid var(--line);
+}
+.sg-lib-label { font-size: var(--t-12); color: var(--mute); }
+.sg-lib-btn {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--s-2);
+  min-height: 34px; padding: 0 var(--s-2) 0 10px; text-align: left;
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md);
+  font: inherit; font-size: var(--t-12); cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 160ms var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) { .sg-lib-btn:hover { border-color: var(--line-strong); } }
+.sg-lib-btn:active { transform: scale(0.98); }
+.sg-lib-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sg-lib-btn[aria-expanded="true"] { border-color: var(--line-strong); background: var(--surface-3); }
+.sg-lib-btn .nm, .sg-lib-menu .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-lib-btn .tg, .sg-lib-menu .tg { color: var(--mute); white-space: nowrap; }
+.sg-lib-btn svg { margin-left: auto; flex: none; color: var(--mute); }
+.sg-lib .sw, .sg-lib-menu .sw { width: 12px; height: 12px; border-radius: 4px; flex: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 18%, transparent); }
+.sg-lib-menu {
+  position: fixed; z-index: 61; margin: 0; padding: 4px; list-style: none;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
+  max-height: min(340px, calc(100vh - 32px)); overflow-y: auto; overscroll-behavior: contain;
+  transform-origin: bottom center; outline: none;
+}
+.sg-lib-menu[hidden] { display: none; }
+.sg-lib-menu li {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 14px; align-items: center; gap: var(--s-2);
+  min-height: 36px; padding: 0 var(--s-2) 0 10px; border-radius: var(--r-md); font-size: var(--t-12); cursor: pointer;
+}
+.sg-lib-menu li .txt { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.sg-lib-menu li .st { font-size: 11px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-lib-menu li.active { background: var(--surface-2); }
+.sg-lib-menu li .ck { color: var(--accent); visibility: hidden; }
+.sg-lib-menu li[aria-selected="true"] .ck { visibility: visible; }
+@media (pointer: coarse) { .sg-lib-btn { min-height: 44px; } .sg-lib-menu li { min-height: 44px; } }
 .sg-foot { flex: none; margin: 0; padding: var(--s-2) var(--s-4); border-top: 1px solid var(--line); font-size: var(--t-12); line-height: 1.4; color: var(--mute); }
 .sg-foot b { color: var(--ink-2); font-weight: 600; }
 .sg-tab {
@@ -1047,10 +1118,20 @@ body.side-open .visitors { opacity: 0; visibility: hidden; }
 .sg-tab[hidden] { display: none; }
 @media (hover: hover) and (pointer: fine) { .sg-tab:hover { background: var(--surface-2); } .sg-hide:hover { color: var(--ink); } }
 /* Panels that use the right side take priority */
-body:has(#inspector:not([hidden])) :is(.shape-guide, .sg-tab),
+/* The guide never goes away while you work. On desktop it steps aside for the inspector
+   or the live panel (they share the right edge); only short-lived popups cover it. */
+.shape-guide, .sg-tab { transition: translate 240ms var(--ease-out), opacity var(--d-ui) ease; }
+@media (min-width: 761px) {
+  body:has(#inspector:not([hidden])) :is(.shape-guide, .sg-tab) { translate: -284px 0; }
+  body:has(#livePanel:not([hidden])) :is(.shape-guide, .sg-tab) { translate: -332px 0; }
+}
+@media (max-width: 760px) {
+  body:has(#inspector:not([hidden])) .shape-guide,
+  body:has(#livePanel:not([hidden])) :is(.shape-guide, .sg-tab) { opacity: 0; pointer-events: none; }
+  body:has(#inspector:not([hidden])) .sg-tab { top: 28%; } /* above the inspector sheet */
+}
 body:has(#palette:not([hidden])) :is(.shape-guide, .sg-tab),
-body:has(#livePanel:not([hidden])) :is(.shape-guide, .sg-tab),
-body:has(#pop:not([hidden])) :is(.shape-guide, .sg-tab) { opacity: 0; pointer-events: none; transition: opacity var(--d-ui) ease; }
+body:has(#pop:not([hidden])) :is(.shape-guide, .sg-tab) { opacity: 0; pointer-events: none; }
 /* Short screens: tighter rows, no footer */
 @media (max-height: 700px) { .sg-list li { min-height: 34px; } .sg-foot { display: none; } .shape-guide { max-height: calc(100vh - 150px); } }
 @media (max-width: 520px) {

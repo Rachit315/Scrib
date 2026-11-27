@@ -3456,13 +3456,211 @@ ${pretty(markup(roots), 3, true)}    </>
     run();
   })();
 
-  $('#sgList').innerHTML = SHAPES.map(s => `<li>${shapeIcon(s)}<span class="sg-txt"><span class="nm">${s.name}</span><span class="to">${s.to}</span></span></li>`).join('');
+  // Each guide row is also a source: drag it onto the canvas to drop that real component there.
+  const SHAPE_TYPE = { 'Device frame': 'device', Button: 'button', 'Text field': 'textfield', Chip: 'chip', Switch: 'switch', Checkbox: 'checkbox', Avatar: 'avatar', Image: 'image', Media: 'media', List: 'list', 'List row': 'listrow', Card: 'card', 'Nav bar': 'navbar', 'Tab bar': 'tabbar', Title: 'title', 'Body text': 'body' };
+  $('#sgList').innerHTML = SHAPES.map(s => `<li tabindex="0" role="button" data-type="${SHAPE_TYPE[s.to]}" aria-label="${s.to}. Drag onto the canvas, or press Enter to add it">${shapeIcon(s)}<span class="sg-txt"><span class="nm">${s.name}</span><span class="to">${s.to}</span></span></li>`).join('');
+
+  // ---- Drag a guide row onto the canvas ----------------------------------------
+  // Pick it up (4px of travel, so a plain click never adds anything), carry a small
+  // ghost of the row, and see a dashed outline of exactly what will land: real size,
+  // snapped into a frame when you're over one. Let go on the canvas to place it;
+  // let go anywhere else, or press Escape, and the ghost flies back to its row.
+  (() => {
+    const list = $('#sgList');
+    const DEVICE = 'iphone-16';
+    // ---- Library picker: which design system a dragged shape lands as ----
+    let libId = null;
+    try { libId = localStorage.getItem('scrib:guide-kit'); } catch { /* ignore */ }
+    const kitNow = () => kitById(libId) || enabledKits()[0] || KITS[0];
+    const libBtn = $('#sgLibBtn'), libMenu = $('#sgLibMenu');
+    document.body.append(libMenu); // above every panel, outside any stacking context
+    const CHECK = '<svg class="ck" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+    function paintLib() {
+      const k = kitNow();
+      libBtn.querySelector('.sw').style.background = k.swatch;
+      libBtn.querySelector('.nm').textContent = k.name;
+      libBtn.querySelector('.tg').textContent = k.tag;
+    }
+    let active = 0;
+    const opts = () => [...libMenu.children];
+    function setActive(i) {
+      const o = opts(); active = (i + o.length) % o.length;
+      o.forEach((li, n) => li.classList.toggle('active', n === active));
+      libMenu.setAttribute('aria-activedescendant', o[active].id);
+      o[active].scrollIntoView({ block: 'nearest' });
+    }
+    function placeMenu() {
+      const r = libBtn.getBoundingClientRect(), w = Math.max(r.width, 248);
+      const left = Math.min(Math.max(8, r.right - w), innerWidth - w - 8);
+      libMenu.style.width = w + 'px'; libMenu.style.left = left + 'px';
+      // Opens upward (the picker sits at the bottom of the guide), downward if there's no room.
+      const h = libMenu.offsetHeight, up = r.top - 6 - h >= 8;
+      libMenu.style.top = (up ? r.top - 6 - h : r.bottom + 6) + 'px';
+      libMenu.style.transformOrigin = up ? 'bottom center' : 'top center';
+    }
+    function openLib() {
+      if (!libMenu.hidden) return;
+      const cur = kitNow().id;
+      libMenu.innerHTML = KITS.map(k => `<li role="option" id="sglib-${k.id}" data-kit="${k.id}" aria-selected="${k.id === cur}"><span class="sw" style="background:${k.swatch}"></span><span class="txt"><span class="nm">${esc(k.name)}</span><span class="st">${esc(k.style)}${enabled.has(k.id) ? '' : ' · off in Libraries'}</span></span><span class="tg">${esc(k.tag)}</span>${CHECK}</li>`).join('');
+      libMenu.hidden = false;
+      placeMenu();
+      setActive(Math.max(0, KITS.findIndex(k => k.id === cur)));
+      libBtn.setAttribute('aria-expanded', 'true');
+      libMenu.focus({ preventScroll: true });
+      const M = motionLib();
+      if (M && !reduceMotion()) M.animate(libMenu, { opacity: [0, 1], transform: ['scale(0.97)', 'scale(1)'] }, { duration: 0.16, ease: [0.23, 1, 0.32, 1] });
+    }
+    function closeLib(focusBtn = true) {
+      if (libMenu.hidden) return;
+      libMenu.hidden = true;
+      libBtn.setAttribute('aria-expanded', 'false');
+      if (focusBtn) libBtn.focus({ preventScroll: true });
+    }
+    function pickLib(id) {
+      libId = id;
+      try { localStorage.setItem('scrib:guide-kit', id); } catch { /* ignore */ }
+      paintLib(); closeLib();
+      toast(`Dropped shapes will use ${kitNow().name}.`);
+    }
+    libBtn.addEventListener('click', () => (libMenu.hidden ? openLib() : closeLib()));
+    libBtn.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openLib(); } });
+    libMenu.addEventListener('pointerdown', e => e.stopPropagation());
+    libMenu.addEventListener('pointermove', e => { const li = e.target.closest('li'); if (li) setActive(opts().indexOf(li)); });
+    libMenu.addEventListener('click', e => { const li = e.target.closest('li[data-kit]'); if (li) pickLib(li.dataset.kit); });
+    libMenu.addEventListener('keydown', e => {
+      const k = e.key;
+      if (k === 'ArrowDown' || k === 'ArrowUp') { e.preventDefault(); setActive(active + (k === 'ArrowDown' ? 1 : -1)); }
+      else if (k === 'Home' || k === 'End') { e.preventDefault(); setActive(k === 'Home' ? 0 : opts().length - 1); }
+      else if (k === 'Enter' || k === ' ') { e.preventDefault(); pickLib(opts()[active].dataset.kit); }
+      else if (k === 'Escape') { e.preventDefault(); e.stopPropagation(); closeLib(); }
+      else if (k === 'Tab') closeLib(false);
+      else if (k.length === 1) { // type a letter to jump
+        const i = KITS.findIndex((x, n) => n > active && x.name.toLowerCase().startsWith(k.toLowerCase()));
+        const j = i >= 0 ? i : KITS.findIndex(x => x.name.toLowerCase().startsWith(k.toLowerCase()));
+        if (j >= 0) setActive(j);
+      }
+    });
+    document.addEventListener('pointerdown', e => { if (!libMenu.hidden && !libMenu.contains(e.target) && !libBtn.contains(e.target)) closeLib(false); });
+    libMenu.addEventListener('focusout', e => { if (!libMenu.hidden && !libMenu.contains(e.relatedTarget) && e.relatedTarget !== libBtn) closeLib(false); });
+    window.addEventListener('resize', () => { if (!libMenu.hidden) placeMenu(); });
+    // If the guide closes (or steps aside) while the menu is open, close the menu too.
+    const guideEl = $('#shapeGuide');
+    new MutationObserver(() => { if (guideEl.hidden) closeLib(false); }).observe(guideEl, { attributes: true, attributeFilter: ['hidden'] });
+    paintLib();
+    /** What dropping `type` at world point (x, y) would add, or null. */
+    function planAt(type, x, y) {
+      if (type === 'device') {
+        const d = devById(DEVICE);
+        const w = Math.round(d.w), h = Math.round(d.h);
+        return { type, F: null, rect: { x: Math.round(x - w / 2), y: Math.round(y - h / 2), w, h }, name: `${d.name} · ${w} × ${h}`, short: d.name };
+      }
+      if (!TYPES[type]) return null;
+      const F = frameAt(x, y), kit = kitNow();
+      const [w, h] = TYPES[type].size;
+      const r = placement({ x: x - w / 2, y: y - h / 2, w, h }, type, kit, F);
+      const rect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) };
+      return { type, F, kit, rect, name: `${kit.names[type] || TYPES[type].name} · ${kit.name}`, short: TYPES[type].name, into: F ? frameName(F) : '' };
+    }
+    function commitPlan(p) {
+      const prev = snapshot(), id = nextId++;
+      if (p.type === 'device') objects.push({ id, kind: 'frame', ...p.rect, device: DEVICE, parent: null, clip: true });
+      else objects.push({ id, kind: 'comp', ...p.rect, kit: p.kit.id, type: p.type, label: defaultLabel(p.type, p.F), parent: p.F ? p.F.id : null });
+      commit(prev);
+      justPlaced = id; // the same soft landing as a converted sketch
+      update(); // stays unselected, so the guide stays open for the next one
+      toast(`${p.short} added${p.into ? ` to ${p.into}` : ''}. Ctrl+Z to undo.`);
+      return id;
+    }
+
+    let d = null; // { li, type, id, sx, sy, gx, gy, el, prev, plan, started }
+    const overCanvas = (x, y) => { const el = document.elementFromPoint(x, y); return !!(el && el.closest('#stage')); };
+    function start() {
+      const r = d.li.getBoundingClientRect();
+      const el = document.createElement('div');
+      el.className = 'sg-ghost';
+      el.innerHTML = d.li.innerHTML;
+      el.style.width = r.width + 'px';
+      d.gx = d.sx - r.left; d.gy = d.sy - r.top; // keep the row where you grabbed it
+      d.home = r;
+      document.body.append(el);
+      const prev = document.createElement('div');
+      prev.className = 'sg-drop'; prev.hidden = true;
+      prev.innerHTML = '<span class="sg-drop-tag"></span>';
+      document.body.append(prev);
+      Object.assign(d, { el, prev, started: true });
+      d.li.classList.add('is-source');
+      document.body.classList.add('sg-dragging');
+    }
+    function move(x, y) {
+      d.el.style.transform = `translate3d(${x - d.gx}px, ${y - d.gy}px, 0)`;
+      const over = overCanvas(x, y);
+      d.plan = over ? planAt(d.type, ...toWorld(x, y)) : null;
+      d.el.classList.toggle('over', !!d.plan);
+      if (!d.plan) { d.prev.hidden = true; return; }
+      const s = toScreen(d.plan.rect);
+      Object.assign(d.prev.style, { transform: `translate3d(${s.x}px, ${s.y}px, 0)`, width: s.w + 'px', height: s.h + 'px' });
+      d.prev.firstChild.textContent = d.plan.name;
+      d.prev.classList.toggle('in-frame', !!d.plan.F);
+      d.prev.hidden = false;
+    }
+    async function end(drop) {
+      const cur = d; d = null;
+      window.removeEventListener('keydown', onKey, true);
+      document.body.classList.remove('sg-dragging');
+      if (!cur || !cur.started) return;
+      cur.prev.remove();
+      const M = motionLib();
+      if (drop && cur.plan) {
+        commitPlan(cur.plan);
+        if (M && !reduceMotion()) await M.animate(cur.el, { opacity: 0, scale: 0.94 }, { duration: 0.14, ease: [0.23, 1, 0.32, 1] }).finished.catch(() => {});
+      } else if (M && !reduceMotion()) {
+        // Not on the canvas: back to the row it came from.
+        const h = cur.li.getBoundingClientRect();
+        cur.el.classList.remove('over');
+        await M.animate(cur.el, { transform: `translate3d(${h.left}px, ${h.top}px, 0)`, opacity: [1, 0.6] }, { type: 'spring', bounce: 0, duration: 0.38 }).finished.catch(() => {});
+      }
+      cur.el.remove();
+      cur.li.classList.remove('is-source');
+    }
+    const onKey = e => { if (e.key === 'Escape' && d) { e.preventDefault(); e.stopPropagation(); end(false); } };
+
+    list.addEventListener('pointerdown', e => {
+      const li = e.target.closest('li[data-type]');
+      if (!li || e.button !== 0 || d) return;
+      d = { li, type: li.dataset.type, id: e.pointerId, sx: e.clientX, sy: e.clientY, touch: e.pointerType !== 'mouse', started: false };
+      window.addEventListener('keydown', onKey, true);
+    });
+    list.addEventListener('pointermove', e => {
+      if (!d || e.pointerId !== d.id) return;
+      if (!d.started) {
+        const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+        // Touch: a sideways pull picks it up; an up/down swipe still scrolls the list.
+        if (d.touch ? Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy) : Math.hypot(dx, dy) < 4) return;
+        d.li.setPointerCapture(e.pointerId);
+        start();
+      }
+      e.preventDefault();
+      move(e.clientX, e.clientY);
+    });
+    list.addEventListener('pointerup', e => { if (d && e.pointerId === d.id) end(true); });
+    list.addEventListener('pointercancel', e => { if (d && e.pointerId === d.id) end(false); });
+    list.addEventListener('lostpointercapture', e => { if (d && d.started && e.pointerId === d.id) end(false); });
+    // Keyboard: Enter or Space drops it in the middle of the view (into the frame there, if any).
+    list.addEventListener('keydown', e => {
+      const li = e.target.closest('li[data-type]');
+      if (!li || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      const p = planAt(li.dataset.type, ...toWorld(innerWidth / 2, innerHeight / 2));
+      if (p) { commitPlan(p); ensureVisible(p.rect); }
+    });
+  })();
 
   const guide = $('#shapeGuide'), guideTab = $('#sgTab');
   // Closed by default: while you draw it's a small "Shape guide" tab; open it when you need it.
   let guideOpen = false;
   try { guideOpen = localStorage.getItem('scrib:guide-open') === '1'; } catch { /* ignore */ }
-  const drawingNow = () => tool === 'pen' && strokes.length + objects.length > 0 && presentEl.hidden;
+  // Any tool: once there's something on the canvas, the guide (or its tab) is always there.
+  const drawingNow = () => strokes.length + objects.length > 0 && presentEl.hidden;
   function updateGuide() {
     if (morphing.has(guide)) return; // the morph decides what shows until it lands
     const d = drawingNow();
